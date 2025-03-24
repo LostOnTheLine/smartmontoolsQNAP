@@ -4,7 +4,7 @@
  * Home page of code is: https://www.smartmontools.org
  *
  * Copyright (C) 2002-11 Bruce Allen
- * Copyright (C) 2008-19 Christian Franke
+ * Copyright (C) 2008-21 Christian Franke
  * Copyright (C) 1999-2000 Michael Cornwell <cornwell@acm.org>
  * Copyright (C) 2000 Andre Hedrick <andre@linux-ide.org>
  *
@@ -563,16 +563,14 @@ int smartcommandhandler(ata_device * device, smart_command_set command, int sele
 
     ata_cmd_out out;
 
-    int64_t start_usec = -1;
-    if (ata_debugmode)
-      start_usec = smi()->get_timer_usec();
+    auto start_usec = (ata_debugmode ? get_timer_usec() : -1);
 
     bool ok = device->ata_pass_through(in, out);
 
     if (start_usec >= 0) {
-      int64_t duration_usec = smi()->get_timer_usec() - start_usec;
-      if (duration_usec >= 500)
-        pout(" [Duration: %.3fs]\n", duration_usec / 1000000.0);
+      auto duration_usec = get_timer_usec() - start_usec;
+      if (duration_usec > 0)
+        pout(" [Duration: %.6fs]\n", duration_usec / 1000000.0);
     }
 
     if (ata_debugmode && out.out_regs.is_set())
@@ -620,7 +618,7 @@ int smartcommandhandler(ata_device * device, smart_command_set command, int sele
         else {
           // We haven't gotten output that makes sense; print out some debugging info
           pout("SMART Status command failed\n");
-          pout("Please get assistance from %s\n", PACKAGE_HOMEPAGE);
+          pout("Please get assistance from %s\n", PACKAGE_URL);
           pout("Register values returned from SMART Status command are:\n");
           print_regs(" ", out.out_regs);
           device->set_err(ENOSYS, "Invalid ATA output register values");
@@ -819,9 +817,6 @@ bool ata_set_features(ata_device * device, unsigned char features,
 int ata_read_identity(ata_device * device, ata_identify_device * buf, bool fix_swapped_id,
                       unsigned char * raw_buf /* = 0 */)
 {
-  unsigned short *rawshort=(unsigned short *)buf;
-  unsigned char  *rawbyte =(unsigned char  *)buf;
-
   // See if device responds either to IDENTIFY DEVICE or IDENTIFY
   // PACKET DEVICE
   bool packet = false;
@@ -849,6 +844,11 @@ int ata_read_identity(ata_device * device, ata_identify_device * buf, bool fix_s
   if (raw_buf)
     memcpy(raw_buf, buf, sizeof(*buf));
 
+  // If there is a checksum there, validate it
+  unsigned char * rawbyte = (unsigned char *)buf;
+  if (rawbyte[512-2] == 0xa5 && checksum(rawbyte))
+    checksumwarning("Drive Identity Structure");
+
   // if machine is big-endian, swap byte order as needed
   if (isbigendian()){
     // swap various capability words that are needed
@@ -856,15 +856,11 @@ int ata_read_identity(ata_device * device, ata_identify_device * buf, bool fix_s
     for (i=0; i<33; i++)
       swap2((char *)(buf->words047_079+i));
     for (i=80; i<=87; i++)
-      swap2((char *)(rawshort+i));
+      swap2((char *)(rawbyte+2*i));
     for (i=0; i<168; i++)
       swap2((char *)(buf->words088_255+i));
   }
   
-  // If there is a checksum there, validate it
-  if ((rawshort[255] & 0x00ff) == 0x00a5 && checksum(rawbyte))
-    checksumwarning("Drive Identity Structure");
-
   // AT Attachment 8 - ATA/ATAPI Command Set (ATA8-ACS)
   // T13/1699-D Revision 6a (Final Draft), September 6, 2008.
   // Sections 7.16.7 and 7.17.6:
@@ -1071,10 +1067,10 @@ bool ataReadExtSelfTestLog(ata_device * device, ata_smart_extselftestlog * log,
   check_multi_sector_sum(log, nsectors, "SMART Extended Self-test Log Structure");
 
   if (isbigendian()) {
-    SWAPV(log->log_desc_index);
     for (unsigned i = 0; i < nsectors; i++) {
+      SWAPV(log[i].log_desc_index);
       for (unsigned j = 0; j < 19; j++)
-        SWAPV(log->log_descs[i].timestamp);
+        SWAPV(log[i].log_descs[j].timestamp);
     }
   }
   return true;
@@ -2416,7 +2412,8 @@ int ataSetSCTTempInterval(ata_device * device, unsigned interval, bool persisten
 
 // Get/Set SCT Error Recovery Control
 static int ataGetSetSCTErrorRecoveryControltime(ata_device * device, unsigned type,
-                                                bool set, unsigned short & time_limit)
+                                                bool set, unsigned short & time_limit,
+                                                bool power_on, bool mfg_default)
 {
   // Check initial status
   ata_sct_status_response sts;
@@ -2434,7 +2431,17 @@ static int ataGetSetSCTErrorRecoveryControltime(ata_device * device, unsigned ty
   ata_sct_error_recovery_control_command cmd; memset(&cmd, 0, sizeof(cmd));
   // CAUTION: DO NOT CHANGE THIS VALUE (SOME ACTION CODES MAY ERASE DISK)
   cmd.action_code    = 3; // Error Recovery Control command
-  cmd.function_code  = (set ? 1 : 2); // 1=Set timer, 2=Get timer
+
+  // 1=Set timer, 2=Get timer, 3=Set Power-on timer, 4=Get Power-on timer, 5=Restore mfg default
+  if (mfg_default) {
+    cmd.function_code = 5;
+  } else if (power_on) {
+    cmd.function_code = (set ? 3 : 4);
+  } else {
+    cmd.function_code = (set ? 1 : 2);
+  }
+  unsigned short saved_function_code = cmd.function_code;
+
   cmd.selection_code = type; // 1=Read timer, 2=Write timer
   if (set)
     cmd.time_limit   = time_limit;
@@ -2471,7 +2478,7 @@ static int ataGetSetSCTErrorRecoveryControltime(ata_device * device, unsigned ty
   if (ataReadSCTStatus(device, &sts))
     return -1;
 
-  if (!(sts.ext_status_code == 0 && sts.action_code == 3 && sts.function_code == (set ? 1 : 2))) {
+  if (!(sts.ext_status_code == 0 && sts.action_code == 3 && sts.function_code == saved_function_code)) {
     pout("Unexpected SCT status 0x%04x (action_code=%u, function_code=%u)\n",
       sts.ext_status_code, sts.action_code, sts.function_code);
     return -1;
@@ -2500,15 +2507,16 @@ static int ataGetSetSCTErrorRecoveryControltime(ata_device * device, unsigned ty
 }
 
 // Get SCT Error Recovery Control
-int ataGetSCTErrorRecoveryControltime(ata_device * device, unsigned type, unsigned short & time_limit)
+int ataGetSCTErrorRecoveryControltime(ata_device * device, unsigned type, unsigned short & time_limit, bool power_on)
 {
-  return ataGetSetSCTErrorRecoveryControltime(device, type, false/*get*/, time_limit);
+  return ataGetSetSCTErrorRecoveryControltime(device, type, false/*get*/, time_limit, power_on, false);
 }
 
 // Set SCT Error Recovery Control
-int ataSetSCTErrorRecoveryControltime(ata_device * device, unsigned type, unsigned short time_limit)
+int ataSetSCTErrorRecoveryControltime(ata_device * device, unsigned type, unsigned short time_limit,
+                                      bool power_on, bool mfg_default)
 {
-  return ataGetSetSCTErrorRecoveryControltime(device, type, true/*set*/, time_limit);
+  return ataGetSetSCTErrorRecoveryControltime(device, type, true/*set*/, time_limit, power_on, mfg_default);
 }
 
 
@@ -2524,7 +2532,7 @@ class parsed_ata_device
 public:
   parsed_ata_device(smart_interface * intf, const char * dev_name);
 
-  virtual ~parsed_ata_device() throw();
+  virtual ~parsed_ata_device();
 
   virtual bool is_open() const;
 
@@ -2605,7 +2613,7 @@ parsed_ata_device::parsed_ata_device(smart_interface * intf, const char * dev_na
   memset(m_command_table, 0, sizeof(m_command_table));
 }
 
-parsed_ata_device::~parsed_ata_device() throw()
+parsed_ata_device::~parsed_ata_device()
 {
   parsed_ata_device::close();
 }

@@ -4,7 +4,7 @@
  * Home page of code is: https://www.smartmontools.org
  *
  * Copyright (C) 2002-11 Bruce Allen
- * Copyright (C) 2008-19 Christian Franke
+ * Copyright (C) 2008-23 Christian Franke
  * Copyright (C) 2000 Michael Cornwell <cornwell@acm.org>
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -35,13 +35,13 @@
 #elif defined(__MINGW32__) && __USE_MINGW_ANSI_STDIO
 // Check format of __mingw_*printf() instead of MSVCRT.DLL:*printf()
 #define __attribute_format_printf(x, y)  __attribute__((format (gnu_printf, x, y)))
-#define HAVE_WORKING_SNPRINTF 1
 #else
 #define __attribute_format_printf(x, y)  __attribute__((format (printf, x, y)))
 #endif
 
 // Make version information string
-std::string format_version_info(const char * prog_name, bool full = false);
+// lines: 1: version only, 2: version+copyright, >=3: full information
+std::string format_version_info(const char * prog_name, int lines = 2);
 
 // return (v)sprintf() formatted std::string
 std::string strprintf(const char * fmt, ...)
@@ -54,15 +54,6 @@ inline bool str_starts_with(const char * str, const char * prefix)
 
 inline bool str_starts_with(const std::string & str, const char * prefix)
   { return !strncmp(str.c_str(), prefix, strlen(prefix)); }
-
-#ifndef HAVE_WORKING_SNPRINTF
-// Substitute by safe replacement functions
-int safe_snprintf(char *buf, int size, const char *fmt, ...)
-    __attribute_format_printf(3, 4);
-int safe_vsnprintf(char *buf, int size, const char *fmt, va_list ap);
-#define snprintf  safe_snprintf
-#define vsnprintf safe_vsnprintf
-#endif
 
 // Convert time to broken-down local time, throw on error.
 struct tm * time_to_tm_local(struct tm * tp, time_t t);
@@ -294,8 +285,8 @@ private:
 // Otherwise precision depends on supported floating point data types.
 
 #if defined(HAVE_LONG_DOUBLE_WIDER) && \
-    (!defined(__MINGW32__) || defined(__USE_MINGW_ANSI_STDIO))
-    // MinGW 'long double' type does not work with MSVCRT *printf()
+    (!defined(__MINGW32__) || __USE_MINGW_ANSI_STDIO)
+    // MinGW 'long double' type does not work with MSVCRT/UCRT *printf()
 #define HAVE_LONG_DOUBLE_WIDER_PRINTF 1
 #else
 #undef HAVE_LONG_DOUBLE_WIDER_PRINTF
@@ -320,6 +311,11 @@ const char * uint128_hilo_to_str(char * str, int strsize, uint64_t value_hi, uin
 template <size_t SIZE>
 inline const char * uint128_hilo_to_str(char (& str)[SIZE], uint64_t value_hi, uint64_t value_lo)
   { return uint128_hilo_to_str(str, (int)SIZE, value_hi, value_lo); }
+
+/// Get microseconds since some unspecified starting point.
+/// Used only for command duration measurements in debug outputs.
+/// Returns -1 if unsupported.
+long long get_timer_usec();
 
 #ifdef _WIN32
 // Get exe directory

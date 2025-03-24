@@ -3,17 +3,21 @@
 # $Id$
 #
 
-@SET_MAKE@
-
 ACLOCAL_AMFLAGS = -I m4
-
-# Make sure .cpp takes precedence to avoid compiling old .c file
-SUFFIXES = .cpp .c .s .o
 
 # BUILD_INFO can be provided by package maintainers (see INSTALL file)
 BUILD_INFO= "(local build)"
 
+if REPRODUCIBLE_BUILD
+set_source_date_epoch = SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH)
+def_source_date_epoch = -D$(set_source_date_epoch)
+if OS_DARWIN
+export ZERO_AR_DATE := 1
+endif
+endif
+
 AM_CPPFLAGS = \
+        $(def_source_date_epoch) \
         -DBUILD_INFO='$(BUILD_INFO)' \
         -DSMARTMONTOOLS_SYSCONFDIR='"$(sysconfdir)"' \
         -DSMARTMONTOOLS_SMARTDSCRIPTDIR='"$(smartdscriptdir)"'
@@ -37,6 +41,11 @@ endif
 if NEED_REGEX
 AM_CPPFLAGS += -I$(srcdir)/regex -D_REGEX_STANDALONE
 endif
+
+# Suppress 'echo' if './configure --enable-silent-rules' or 'make V=0' is used.
+# Variables AM_V_* are provided by automake >= 1.13.
+ECHO_V = ! $(AM_V_P) || echo
+ECHO_V_GEN = @$(AM_V_P) || echo '  GEN      $@'; $(ECHO_V)
 
 sbin_PROGRAMS = \
         smartctl \
@@ -64,13 +73,16 @@ smartctl_SOURCES = \
         dev_ata_cmd_set.cpp \
         dev_ata_cmd_set.h \
         dev_intelliprop.cpp \
-        dev_intelliprop.h \
         dev_interface.cpp \
         dev_interface.h \
         dev_jmb39x_raid.cpp \
         dev_tunnelled.h \
 		dev_qnap_tr004.cpp \
         drivedb.h \
+        farmcmds.cpp \
+        farmcmds.h \
+        farmprint.cpp \
+        farmprint.h \
         json.cpp \
         json.h \
         knowndrives.cpp \
@@ -109,7 +121,6 @@ EXTRA_smartctl_SOURCES = \
         os_qnxnto.cpp \
         os_qnxnto.h \
         os_solaris.cpp \
-        os_solaris.h \
         os_win32.cpp \
         os_generic.cpp \
         os_generic.h \
@@ -121,7 +132,9 @@ EXTRA_smartctl_SOURCES = \
         dev_areca.h \
         dev_legacy.cpp \
         linux_nvme_ioctl.h \
-        megaraid.h
+        openbsd_nvme_ioctl.h \
+        megaraid.h \
+        sssraid.h
 
 if OS_WIN32_MINGW
 
@@ -144,7 +157,6 @@ smartd_SOURCES = \
         dev_ata_cmd_set.cpp \
         dev_ata_cmd_set.h \
         dev_intelliprop.cpp \
-        dev_intelliprop.h \
         dev_interface.cpp \
         dev_interface.h \
         dev_jmb39x_raid.cpp \
@@ -183,7 +195,6 @@ EXTRA_smartd_SOURCES = \
         os_qnxnto.cpp \
         os_qnxnto.h \
         os_solaris.cpp \
-        os_solaris.h \
         os_win32.cpp \
         os_generic.cpp \
         os_generic.h \
@@ -197,7 +208,17 @@ EXTRA_smartd_SOURCES = \
         linux_nvme_ioctl.h \
         freebsd_nvme_ioctl.h \
         netbsd_nvme_ioctl.h \
-        megaraid.h
+        openbsd_nvme_ioctl.h \
+        megaraid.h \
+        sssraid.h
+
+if OS_POSIX
+
+smartd_SOURCES += \
+        popen_as_ugid.cpp \
+        popen_as_ugid.h
+
+endif
 
 if OS_WIN32_MINGW
 
@@ -213,10 +234,6 @@ smartd_LDADD        += smartd_res.o
 smartd_DEPENDENCIES += smartd_res.o
 
 endif
-
-# Exclude from source tarball
-nodist_EXTRA_smartctl_SOURCES = os_solaris_ata.s
-nodist_EXTRA_smartd_SOURCES   = os_solaris_ata.s
 
 if NEED_GETOPT_LONG
 
@@ -277,6 +294,12 @@ smartd_SOURCES += \
 
 smartctl_LDADD += -lole32 -loleaut32
 smartd_LDADD   += -lole32 -loleaut32
+
+# Some versions of the MinGW-w64 import lib for kernel32.dll include some symbols
+# duplicated from advapi32.dll.  Older versions of windows provide these symbols
+# only in advapi32.dll.  Ensure that the advapi32 lib is linked first.
+smartctl_LDADD += -ladvapi32
+smartd_LDADD   += -ladvapi32
 
 endif
 
@@ -397,6 +420,7 @@ EXTRA_DIST = \
         autogen.sh \
         ChangeLog-5.0-6.0 \
         cppcheck.sh \
+        getversion.sh \
         smartd.initd.in \
         smartd.cygwin.initd.in \
         smartd.freebsd.initd.in \
@@ -416,12 +440,13 @@ EXTRA_DIST = \
         os_darwin/pkg/root/usr/local/sbin/smart-pkg-uninstall \
         os_win32/default.manifest \
         os_win32/installer.nsi \
+        os_win32/pe32edit.sh \
         os_win32/runcmd.c \
         os_win32/smartd_mailer.ps1 \
         os_win32/smartd_mailer.conf.sample.ps1 \
         os_win32/smartd_warning.cmd \
         os_win32/syslogevt.mc \
-        os_win32/update-smart-drivedb.nsi \
+        os_win32/update-smart-drivedb.ps1.in \
         os_win32/versioninfo.rc.in \
         os_win32/wtssendmsg.c \
         $(docs_DATA) \
@@ -429,6 +454,8 @@ EXTRA_DIST = \
         $(examples_SCRIPTS)
 
 CLEANFILES = \
+        cppcheck.txt \
+        shellcheck.txt \
         smartd.8 \
         smartd.1m \
         smartd.8.html \
@@ -468,6 +495,7 @@ MAINTAINERCLEANFILES = \
         $(srcdir)/aclocal.m4 \
         $(srcdir)/compile \
         $(srcdir)/configure \
+        $(srcdir)/configure~ \
         $(srcdir)/config.guess \
         $(srcdir)/config.h.in \
         $(srcdir)/config.h.in~ \
@@ -479,41 +507,22 @@ MAINTAINERCLEANFILES = \
 
 smartctl.o utility.o: svnversion.h
 
-if IS_SVN_BUILD
-# Get version info from SVN
-svnversion.h: ChangeLog Makefile $(svn_deps)
-	@echo ' svn info | $$(VERSION_FROM_SVN_INFO) > $@'
-	@echo '/* svnversion.h.  Generated by Makefile from svn info.  */' > $@
-	@(cd $(srcdir) \
-	 && svnversion 2>/dev/null | sed -n 's,^\([0-9].*\),REV  "\1",p' \
-	 && TZ= LC_ALL=C svn info 2>/dev/null \
-	 | sed -n 'h;s,^.* Date: *\([^ ]*\) .*$$,DATE "\1",p;g;s,^.* Date: *[^ ]* *\([^ ]*\) .*$$,TIME "\1",p') \
-	| sed 's,^,#define SMARTMONTOOLS_SVN_,' >> $@
-else
-
-# SVN not available, guess version info from Id strings
-svnversion.h: ChangeLog Makefile NEWS
-	@echo ' cat ChangeLog NEWS $$(SOURCES) | $$(VERSION_FROM_SVN_IDS) > $@'
-	@echo '/* svnversion.h.  Generated by Makefile from Id strings.  */' > $@
-	@(cd $(srcdir) && cat ChangeLog NEWS Makefile.am configure.ac smart*.in *.cpp *.h) \
-	| sed -n 's,^.*\$$[I][d]: [^ ]* \([0-9][0-9]* [0-9][-0-9]* [0-9][:0-9]*\)[^:0-9][^$$]*\$$.*$$,\1,p' \
-	| sort -n -r \
-	| sed -n 'h;s,^\([^ ]*\) .*$$,REV  "\1",p;g;s,^[^ ]* \([^ ]*\) .*$$,DATE "\1",p;g;s,^[^ ]* [^ ]* \([^ ]*\)$$,TIME "\1",p;q' \
-	| sed 's,^,#define SMARTMONTOOLS_SVN_,' >> $@
-endif
-
+# Get version info from svn, Id strings or git
+svnversion.h: ChangeLog Makefile config.h
+	$(AM_V_GEN)$(srcdir)/getversion.sh -i > $@
+	@! $(AM_V_P) || cat $@
 
 if ENABLE_DRIVEDB
-drivedb_DATA = drivedb.h
+drivedbinst_DATA = drivedb.h
 endif
 
 update-smart-drivedb: update-smart-drivedb.in config.status
-	$(SHELL) ./config.status --file=$@
-	chmod +x $@
+	$(AM_V_GEN)$(SHELL) ./config.status -q --file=$@
+	$(AM_V_at)chmod +x $@
 
 smartd_warning.sh: smartd_warning.sh.in config.status
-	$(SHELL) ./config.status --file=$@
-	chmod +x $@
+	$(AM_V_GEN)$(SHELL) ./config.status -q --file=$@
+	$(AM_V_at)chmod +x $@
 
 if INSTALL_INITSCRIPT
 if OS_DARWIN
@@ -523,7 +532,7 @@ initd_DATA_install = install-initdDATA-darwin
 initd_DATA_uninstall = uninstall-initdDATA-darwin
 
 com.smartmontools.smartd.plist : os_darwin/com.smartmontools.smartd.plist.in
-	sed "s|/usr/sbin/|$(sbindir)/|" $< > $@
+	$(AM_V_GEN)sed "s|/usr/sbin/|$(sbindir)/|" $(srcdir)/os_darwin/com.smartmontools.smartd.plist.in > $@
 
 install-initdDATA-darwin: $(initd_DATA)
 	$(MKDIR_P) '$(DESTDIR)$(initddir)'
@@ -537,7 +546,7 @@ else
 initd_DATA = $(initdfile)
 
 $(initdfile): $(srcdir)/$(initdfile).in Makefile
-	sed 's|/usr/local/sbin/|$(sbindir)/|g' $(srcdir)/$(initdfile).in > $@
+	$(AM_V_GEN)sed 's|/usr/local/sbin/|$(sbindir)/|g' $(srcdir)/$(initdfile).in > $@
 
 initd_install_name = smartd$(smartd_suffix)
 
@@ -569,7 +578,7 @@ systemdsystemunit_DATA = smartd.service
 endif
 
 smartd.service: smartd.service.in Makefile
-	@echo ' $$(SMARTD_SERVICE_FILTER) < $(srcdir)/smartd.service.in > $@'
+	$(ECHO_V_GEN) ' $$(SMARTD_SERVICE_FILTER) < $(srcdir)/smartd.service.in > $@'
 	@{ \
 	sed 's|/usr/local/sbin/smartd|$(sbindir)/smartd|' | \
 	if test -n '$(SYSTEMD_LDADD)'; then \
@@ -587,7 +596,7 @@ smartd.service: smartd.service.in Makefile
 # Create empty directories if configured.
 # Default install rules no longer create empty directories since automake 1.11.
 installdirs-local:
-	@for d in '$(smartdplugindir)' '$(savestatesdir)' '$(attributelogdir)'; do \
+	@for d in '$(smartdplugindir)' '$(drivedbdir)' '$(savestatesdir)' '$(attributelogdir)'; do \
 	  test -n "$$d" || continue; \
 	  echo " $(MKDIR_P) '$(DESTDIR)$$d'"; \
 	  $(MKDIR_P) "$(DESTDIR)$$d" || exit 1; \
@@ -615,9 +624,15 @@ MAN_FILTER = { \
         -e 's|/usr/bin/mail|/usr/bin/$(os_mailer)|g' \
         -e 's|RELEASE_6_0_DRIVEDB|$(DRIVEDB_BRANCH)|g' | \
     if test -n '$(drivedbdir)'; then \
-      sed 's|/usr/local/share/smartmontools/drivedb\.h|$(drivedbdir)/drivedb.h|g' ; \
+      sed -e 's|/usr/local/share/smartmontools/drivedb\.h|$(drivedbinstdir)/drivedb.h|g' \
+          -e 's|/usr/local/var/lib/smartmontools/drivedb\.h|$(drivedbdir)/drivedb.h|g'  ; \
     else \
       sed '/^\.\\" %IF ENABLE_DRIVEDB/,/^\.\\" %ENDIF ENABLE_DRIVEDB/ s,^,.\\"\# ,' ; \
+    fi | \
+    if test '$(drivedbinstdir)' != '$(drivedbdir)'; then \
+      cat; \
+    else \
+      sed '/^\.\\" %IF ENABLE_DB_INSTALL/,/^\.\\" %ENDIF ENABLE_DB_INSTALL/ s,^,.\\"\# ,' ; \
     fi | \
     if test '$(with_update_smart_drivedb)' = 'yes'; then \
       cat; \
@@ -671,21 +686,20 @@ MAN_FILTER = { \
       cat; \
     fi; }
 
-# Implicit rule 'smart%: smart%.in ...' does not work with BSD make
 smartctl.8: smartctl.8.in Makefile svnversion.h
-	@echo ' $$(MAN_FILTER) < $(srcdir)/smartctl.8.in > $@'
+	$(ECHO_V_GEN) ' $$(MAN_FILTER) < $(srcdir)/smartctl.8.in > $@'
 	@$(MAN_FILTER) < $(srcdir)/smartctl.8.in > $@
 
 smartd.8: smartd.8.in Makefile svnversion.h
-	@echo ' $$(MAN_FILTER) < $(srcdir)/smartd.8.in > $@'
+	$(ECHO_V_GEN) ' $$(MAN_FILTER) < $(srcdir)/smartd.8.in > $@'
 	@$(MAN_FILTER) < $(srcdir)/smartd.8.in > $@
 
 smartd.conf.5: smartd.conf.5.in Makefile svnversion.h
-	@echo ' $$(MAN_FILTER) < $(srcdir)/smartd.conf.5.in > $@'
+	$(ECHO_V_GEN) ' $$(MAN_FILTER) < $(srcdir)/smartd.conf.5.in > $@'
 	@$(MAN_FILTER) < $(srcdir)/smartd.conf.5.in > $@
 
 update-smart-drivedb.8: update-smart-drivedb.8.in Makefile svnversion.h
-	@echo ' $$(MAN_FILTER) < $(srcdir)/update-smart-drivedb.8.in > $@'
+	$(ECHO_V_GEN) ' $$(MAN_FILTER) < $(srcdir)/update-smart-drivedb.8.in > $@'
 	@$(MAN_FILTER) < $(srcdir)/update-smart-drivedb.8.in > $@
 
 # Build Solaris specific man pages
@@ -697,69 +711,80 @@ SOLARIS_MAN_FILTER = \
         -e 's,/var/log/messages,/var/adm/messages,g'
 
 smartctl.1m: smartctl.8
-	@echo ' $$(SOLARIS_MAN_FILTER) < smartctl.8 > $@'
+	$(ECHO_V_GEN) ' $$(SOLARIS_MAN_FILTER) < smartctl.8 > $@'
 	@$(SOLARIS_MAN_FILTER) < smartctl.8 > $@
 
 smartd.1m: smartd.8
-	@echo ' $$(SOLARIS_MAN_FILTER) < smartd.8 > $@'
+	$(ECHO_V_GEN) ' $$(SOLARIS_MAN_FILTER) < smartd.8 > $@'
 	@$(SOLARIS_MAN_FILTER) < smartd.8 > $@
 
 smartd.conf.4: smartd.conf.5
-	@echo ' $$(SOLARIS_MAN_FILTER) < smartd.conf.5 > $@'
+	$(ECHO_V_GEN) ' $$(SOLARIS_MAN_FILTER) < smartd.conf.5 > $@'
 	@$(SOLARIS_MAN_FILTER) < smartd.conf.5 > $@
 
 update-smart-drivedb.1m: update-smart-drivedb.8
-	@echo ' $$(SOLARIS_MAN_FILTER) < update-smart-drivedb.8 > $@'
+	$(ECHO_V_GEN) ' $$(SOLARIS_MAN_FILTER) < update-smart-drivedb.8 > $@'
 	@$(SOLARIS_MAN_FILTER) < update-smart-drivedb.8 > $@
 
 
 # Convert man pages into .html, .pdf and .txt
-# TODO: configure
 MAN2HTML = man2html
-#MAN2HTML = groff -man -Thtml
-MAN2PDF = man -Tpdf -l
-#MAN2PDF = groff -man -Tpdf
-MAN2TXT = groff -man -Tascii -P'-bcou'
+#MAN2HTML = $(set_source_date_epoch) groff -man -Thtml
+MAN2PDF = $(set_source_date_epoch) man -Tpdf -l
+#MAN2PDF = $(set_source_date_epoch) groff -man -Tpdf
 
-# Remove HTTP header and fix links in man2html output
+# Remove HTTP header and timestamp and fix links in man2html output
 FIXHTML = sed -e '1s,^Content-type.*,,' \
               -e 's,<A HREF="[^"]*/man2html?\([1-8]\)+\(smart[cd][.a-z]*\)">,<A HREF="\2.\1.html">,g' \
               -e 's,<A HREF="[^"]*/man2html">,<A HREF=".">,g' \
               -e 's,<A HREF="[^"]*/man2html?[^"]*">\([^<]*\)</A>,\1,g' \
-              -e 's,<A HREF="mailto:[^s][^m][^a][^"]*">\([^<]*\)</A>,\1,g'
+              -e 's,<A HREF="mailto:[^s][^m][^a][^"]*">\([^<]*\)</A>,\1,g' \
+              -e '/^Time: [012][0-9]:[0-5][0-9]:[0-5][0-9] [^<]*$$/d'
+
+# Avoid automake warning: '.PHONY was already defined in condition ...'
+phony = cppcheck htmlman pdfman shellcheck
+.PHONY: $(phony)
 
 htmlman: smartctl.8.html smartd.8.html smartd.conf.5.html update-smart-drivedb.8.html
 
 pdfman:  smartctl.8.pdf smartd.8.pdf smartd.conf.5.pdf update-smart-drivedb.8.pdf
 
-txtman:  smartctl.8.txt smartd.8.txt smartd.conf.5.txt update-smart-drivedb.8.txt
-
-%.5.html: %.5
-	$(MAN2HTML) $< > $@.tmp
-	@echo ' $$(FIXHTML) < $@.tmp > $@'
+smartctl.8.html: smartctl.8
+	$(AM_V_GEN)$(MAN2HTML) smartctl.8 > $@.tmp
+	@$(ECHO_V) ' $$(FIXHTML) < $@.tmp > $@'
 	@$(FIXHTML) < $@.tmp > $@
 
-%.8.html: %.8
-	$(MAN2HTML) $< > $@.tmp
-	@echo ' $$(FIXHTML) < $@.tmp > $@'
+smartd.8.html: smartd.8
+	$(AM_V_GEN)$(MAN2HTML) smartd.8 > $@.tmp
+	@$(ECHO_V) ' $$(FIXHTML) < $@.tmp > $@'
 	@$(FIXHTML) < $@.tmp > $@
 
-%.5.pdf: %.5
-	$(MAN2PDF) $< > $@
+smartd.conf.5.html: smartd.conf.5
+	$(AM_V_GEN)$(MAN2HTML) smartd.conf.5 > $@.tmp
+	@$(ECHO_V) ' $$(FIXHTML) < $@.tmp > $@'
+	@$(FIXHTML) < $@.tmp > $@
 
-%.8.pdf: %.8
-	$(MAN2PDF) $< > $@
+update-smart-drivedb.8.html: update-smart-drivedb.8
+	$(AM_V_GEN)$(MAN2HTML) update-smart-drivedb.8 > $@.tmp
+	@$(ECHO_V) ' $$(FIXHTML) < $@.tmp > $@'
+	@$(FIXHTML) < $@.tmp > $@
 
-%.5.txt: %.5
-	$(MAN2TXT) $< > $@
+smartctl.8.pdf: smartctl.8
+	$(AM_V_GEN)$(MAN2PDF) smartctl.8 > $@
 
-%.8.txt: %.8
-	$(MAN2TXT) $< > $@
+smartd.8.pdf: smartd.8
+	$(AM_V_GEN)$(MAN2PDF) smartd.8 > $@
 
+smartd.conf.5.pdf: smartd.conf.5
+	$(AM_V_GEN)$(MAN2PDF) smartd.conf.5 > $@
+
+update-smart-drivedb.8.pdf: update-smart-drivedb.8
+	$(AM_V_GEN)$(MAN2PDF) update-smart-drivedb.8 > $@
 
 # Check drive database syntax
 check:
-	@if ./smartctl -B $(srcdir)/drivedb.h -P showall >/dev/null; then \
+	@if ./smartctl -P showall >/dev/null && \
+	    ./smartctl -B $(srcdir)/drivedb.h -P showall >/dev/null; then \
 	  echo "$(srcdir)/drivedb.h: OK"; \
 	else \
 	  echo "$(srcdir)/drivedb.h: Syntax check failed"; exit 1; \
@@ -773,24 +798,89 @@ cppcheck.txt: $(smartctl_SOURCES) $(EXTRA_smartctl_SOURCES) \
               $(smartd_SOURCES) $(EXTRA_smartd_SOURCES)
 	$(srcdir)/cppcheck.sh $(CPPCHECKFLAGS) > $@
 
+# Create shellcheck report
+shellcheck: shellcheck.txt
+
+SHELLCHECK=shellcheck
+
+# Exclude "SC3043 (warning): In POSIX sh, 'local' is undefined."
+# Virtually all relevant /bin/sh shells support 'local'
+SHELLCHECKFLAGS=-S warning -e SC3043
+
+SHELLSCRIPTS= \
+    $(srcdir)/autogen.sh \
+    $(srcdir)/cppcheck.sh \
+    $(srcdir)/do_release \
+    $(srcdir)/getversion.sh \
+    $(srcdir)/os_win32/pe32edit.sh \
+    smartd_warning.sh \
+    update-smart-drivedb
+
+shellcheck.txt: $(SHELLSCRIPTS)
+	$(ECHO_V_GEN) '  $(SHELLCHECK) $(SHELLCHECKFLAGS) $(SHELLSCRIPTS) > $@'
+	@$(SHELLCHECK) $(SHELLCHECKFLAGS) $(SHELLSCRIPTS) > $@ || \
+	if [ $$? = 1 ]; then echo "$@: issues found"; else rm -f $@; exit 1; fi
+
+if REPRODUCIBLE_BUILD
+# The default 'dist-*' rules generated by automake allow to override the
+# 'tar' command with environment variable TAR.  But the make command would
+# not return a nonzero exit status if the tar command fails because it is
+# used as the first part of a pipeline.  A compressed empty tar file would
+# be created in this case.
+# Therefore the rules are overridden for reproducible builds of the source
+# tarball.
+
+phony += check-gnu-tar dist-fail
+
+reproducible_tar = \
+        $${TAR-tar} --sort=name --mtime=@$(SOURCE_DATE_EPOCH) --clamp-mtime \
+                    --owner=root:0 --group=root:0 -cho -f
+
+dist-gzip: distdir check-gnu-tar
+	$(reproducible_tar) $(distdir).tar $(distdir)
+	unset GZIP; gzip $(GZIP_ENV) -f -n $(distdir).tar
+	$(am__post_remove_distdir)
+
+dist-xz: distdir check-gnu-tar
+	$(reproducible_tar) $(distdir).tar $(distdir)
+	unset XZ_OPT; xz -e -f $(distdir).tar
+	$(am__post_remove_distdir)
+
+dist-zstd: distdir check-gnu-tar
+	$(reproducible_tar) $(distdir).tar $(distdir)
+	unset ZSTD_CLEVEL; zstd -19 -f -q --rm $(distdir).tar
+	$(am__post_remove_distdir)
+
+dist-bzip2: dist-fail
+dist-lzip: dist-fail
+dist-zip: dist-fail
+
+check-gnu-tar:
+	@$(reproducible_tar) - config.h >/dev/null 2>&1 \
+	|| ! echo "GNU tar is required if SOURCE_DATE_EPOCH is used." >&2
+
+dist-fail:
+	@! echo "Only 'dist-{gzip,xz,zstd}' are supported if SOURCE_DATE_EPOCH is used." >&2
+endif
+
 
 if OS_WIN32_MINGW
 # Windows resources
 
 smartctl_res.o: smartctl_res.rc $(os_win32_manifest)
-	$(WINDRES) $< $@
+	$(AM_V_GEN)$(WINDRES) smartctl_res.rc $@
 
 smartd_res.o: smartd_res.rc syslogevt.rc $(os_win32_manifest)
-	$(WINDRES) $< $@
+	$(AM_V_GEN)$(WINDRES) smartd_res.rc $@
 
 runcmda_res.o: runcmda_res.rc defadmin.manifest
-	$(WINDRES) $< $@
+	$(AM_V_GEN)$(WINDRES) runcmda_res.rc $@
 
 runcmdu_res.o: runcmdu_res.rc $(os_win32_manifest)
-	$(WINDRES) $< $@
+	$(AM_V_GEN)$(WINDRES) runcmdu_res.rc $@
 
 wtssendmsg_res.o: wtssendmsg_res.rc $(os_win32_manifest)
-	$(WINDRES) $< $@
+	$(AM_V_GEN)$(WINDRES) wtssendmsg_res.rc $@
 
 # Convert version for VERSIONINFO resource: 6.6 r4519 -> 6.6.0.4519,
 # set description, name, version and year
@@ -803,43 +893,55 @@ WIN_RC_FILTER = { \
         -e "s|@TEXT_VERSION@|$$txtver|g" -e "s|@YY@|$$yy|g"; }
 
 WIN_MAKE_RES = \
-    echo "n=$$n d=\"$$d"'"; $$(WIN_RC_FILTER) < $< > $@'; \
-    $(WIN_RC_FILTER) < $< > $@
+    $(ECHO_V) "n=$$n d=\"$$d"'"; $$(WIN_RC_FILTER) < $(srcdir)/os_win32/versioninfo.rc.in > $@'; \
+    $(WIN_RC_FILTER) < $(srcdir)/os_win32/versioninfo.rc.in > $@
 
 WIN_APP_MANIFEST = \
     if test -n '$(os_win32_manifest)'; then \
-      echo "echo '1 24 \"$(srcdir)/$(os_win32_manifest)\"' >> $@"; \
+      $(ECHO_V) "echo '1 24 \"$(srcdir)/$(os_win32_manifest)\"' >> $@"; \
       echo '1 24 "$(srcdir)/$(os_win32_manifest)"' >> $@; \
     fi
 
 smartctl_res.rc: os_win32/versioninfo.rc.in Makefile svnversion.h
+	$(AM_V_GEN)
 	@n=smartctl d="Control and Monitor Utility for SMART Disks"; $(WIN_MAKE_RES)
 	@$(WIN_APP_MANIFEST)
 
 smartd_res.rc: os_win32/versioninfo.rc.in Makefile svnversion.h
+	$(AM_V_GEN)
 	@n=smartd d="SMART Disk Monitoring Daemon"; $(WIN_MAKE_RES)
-	echo '#include "./syslogevt.rc"' >> $@
+	$(AM_V_at)echo '#include "./syslogevt.rc"' >> $@
 	@$(WIN_APP_MANIFEST)
 
 runcmdu_res.rc: os_win32/versioninfo.rc.in Makefile svnversion.h
+	$(AM_V_GEN)
 	@n=runcmdu d="Run console command"; $(WIN_MAKE_RES)
 	@$(WIN_APP_MANIFEST)
 
 runcmda_res.rc: os_win32/versioninfo.rc.in Makefile svnversion.h
+	$(AM_V_GEN)
 	@n=runcmda d="Run console command as admin"; $(WIN_MAKE_RES)
-	echo '1 24 "./defadmin.manifest"' >> $@
+	$(AM_V_at)echo '1 24 "./defadmin.manifest"' >> $@
 
 wtssendmsg_res.rc: os_win32/versioninfo.rc.in Makefile svnversion.h
+	$(AM_V_GEN)
 	@n=wtssendmsg d="Send console messages"; $(WIN_MAKE_RES)
 	@$(WIN_APP_MANIFEST)
 
 syslogevt.rc: os_win32/syslogevt.mc
-	$(WINDMC) -b $<
+	$(AM_V_GEN)
+	@if test -n '$(WINDMC)'; then \
+	  $(ECHO_V) '$(WINDMC) -b $(srcdir)/os_win32/syslogevt.mc'; \
+	  $(WINDMC) -b $(srcdir)/os_win32/syslogevt.mc; \
+	else \
+	  $(ECHO_V) "echo '// MESSAGETABLE not available' > $@"; \
+	  echo '// MESSAGETABLE not available' > $@; \
+	fi
 
 defadmin.manifest: os_win32/default.manifest
-	sed 's,"asInvoker","requireAdministrator",' $< > $@
+	$(AM_V_GEN)sed 's,"asInvoker","requireAdministrator",' $(srcdir)/os_win32/default.manifest > $@
 
-# Definitions for Windows distribution
+# Build Windows distribution
 
 if OS_WIN64
 win_bits = 64
@@ -851,68 +953,47 @@ distdir_win32  = $(PACKAGE)-$(VERSION).win$(win_bits)
 distzip_win32  = $(PACKAGE)-$(VERSION).win$(win_bits).zip
 distinst_win32 = $(PACKAGE)-$(VERSION).win$(win_bits)-setup.exe
 
-exedir_win32 = $(distdir_win32)/bin
-docdir_win32 = $(distdir_win32)/doc
-
-EXEFILES_WIN32 = \
-        $(exedir_win32)/smartctl.exe \
-        $(exedir_win32)/smartctl-nc.exe \
-        $(exedir_win32)/smartd.exe \
-        $(exedir_win32)/smartd_mailer.ps1 \
-        $(exedir_win32)/smartd_mailer.conf.sample.ps1 \
-        $(exedir_win32)/smartd_warning.cmd \
-        $(exedir_win32)/runcmda.exe \
-        $(exedir_win32)/runcmdu.exe \
-        $(exedir_win32)/wtssendmsg.exe
+BINFILES_WIN32 = \
+        smartctl.exe smartctl-nc.exe smartd.exe \
+        runcmda.exe runcmdu.exe wtssendmsg.exe \
+        $(srcdir)/os_win32/smartd_mailer.ps1 \
+        $(srcdir)/os_win32/smartd_mailer.conf.sample.ps1 \
+        $(srcdir)/os_win32/smartd_warning.cmd
 
 if ENABLE_DRIVEDB
-if OS_WIN32_NSIS
-EXEFILES_WIN32 += \
-        $(exedir_win32)/update-smart-drivedb.exe
-endif
+BINFILES_WIN32 += \
+        update-smart-drivedb.ps1 \
+        $(srcdir)/drivedb.h
 endif
 
-FILES_WIN32 = \
-        $(EXEFILES_WIN32) \
-        $(docdir_win32)/AUTHORS.txt \
-        $(docdir_win32)/ChangeLog.txt \
-        $(docdir_win32)/ChangeLog-6.0-7.0.txt \
-        $(docdir_win32)/COPYING.txt \
-        $(docdir_win32)/INSTALL.txt \
-        $(docdir_win32)/NEWS.txt \
-        $(docdir_win32)/README.txt \
-        $(docdir_win32)/TODO.txt \
-        $(docdir_win32)/checksums$(win_bits).txt \
-        $(docdir_win32)/smartd.conf \
-        $(docdir_win32)/smartctl.8.html \
-        $(docdir_win32)/smartctl.8.pdf \
-        $(docdir_win32)/smartd.8.html \
-        $(docdir_win32)/smartd.8.pdf \
-        $(docdir_win32)/smartd.conf.5.html \
-        $(docdir_win32)/smartd.conf.5.pdf
-
-if ENABLE_DRIVEDB
-FILES_WIN32 += \
-        $(exedir_win32)/drivedb.h
-endif
+DOCFILES_WIN32 = \
+        smartctl.8.html smartd.8.html smartd.conf.5.html \
+        smartctl.8.pdf smartd.8.pdf smartd.conf.5.pdf \
+        $(srcdir)/AUTHORS \
+        $(srcdir)/ChangeLog \
+        $(srcdir)/ChangeLog-6.0-7.0 \
+        $(srcdir)/COPYING \
+        $(srcdir)/INSTALL \
+        $(srcdir)/NEWS \
+        $(srcdir)/README \
+        $(srcdir)/TODO \
+        $(srcdir)/smartd.conf
 
 CLEANFILES += \
-        $(FILES_WIN32) \
         defadmin.manifest \
-        distdir.mkdir \
         runcmda.exe runcmda_res.rc \
         runcmdu.exe runcmdu_res.rc \
         smartctl-nc.exe smartctl-nc.exe.tmp \
         smartctl_res.rc smartd_res.rc \
         syslogevt.h \
         syslogevt.rc syslogevt_*.bin \
-        update-smart-drivedb.exe \
+        update-smart-drivedb.ps1 \
         wtssendmsg.exe wtssendmsg_res.rc
 
 # Note: Only use without options to be compatible with all variants
 UNIX2DOS = unix2dos
 
-# Build Windows distribution
+phony += cleandist-win32 dist-win32 distdir-win32 install-win32 installer-win32
 
 dist-win32: $(distzip_win32)
 
@@ -921,122 +1002,126 @@ install-win32: $(distinst_win32)
 
 installer-win32: $(distinst_win32)
 
-distdir-win32: distdir.mkdir $(FILES_WIN32)
+distdir-win32: $(distdir_win32).stamp
 
-$(distzip_win32): distdir.mkdir $(FILES_WIN32)
-	@rm -fv $(distzip_win32)
-	cd $(distdir_win32) && zip -9 ../$(distzip_win32) bin/* doc/*
-	md5sum $@ > $@.md5
-	sha1sum $@ > $@.sha1
-	sha256sum $@ > $@.sha256
+$(distzip_win32): $(distdir_win32).stamp
+	$(AM_V_GEN)
+	$(AM_V_at)rm -f $(distzip_win32)
+	$(AM_V_at)cd $(distdir_win32) && zip -9 -q ../$(distzip_win32) bin/* doc/*
+	$(AM_V_at)md5sum $@ > $@.md5
+	$(AM_V_at)sha1sum $@ > $@.sha1
+	$(AM_V_at)sha256sum $@ > $@.sha256
+	@test -z '$(SOURCE_DATE_EPOCH)' \
+	|| echo "Warning: '$(distzip_win32)' is not reproducible if SOURCE_DATE_EPOCH is used." >&2
 
-if OS_WIN32_NSIS
 # Build NSIS installer
 # Note: Only option character '-' is also compatible with Linux version of makensis
-$(distinst_win32): os_win32/installer.nsi smartctl_res.rc distdir.mkdir $(FILES_WIN32)
-	test -z '$(builddir_win64)' || ( cd $(builddir_win64) && make distdir-win32 )
+$(distinst_win32): os_win32/installer.nsi Makefile smartctl_res.rc $(distdir_win32).stamp
+	$(AM_V_GEN)
+	@test -n '$(MAKENSIS)' || ! echo 'makensis: command not found (https://nsis.sourceforge.io)'
+	$(AM_V_at)test -z '$(builddir_win64)' || ( cd $(builddir_win64) && $(MAKE) distdir-win32 )
 	@date=`sed -n 's,^.*DATE[^"]*"\([^"]*\)".*$$,\1,p' svnversion.h` && \
 	rev=`sed -n 's,^.*REV[^"]*"\([^"]*\)".*$$,r\1,p' svnversion.h` && \
 	version=`sed -n 's|^ *VALUE "FileVersion", "\([0-9.]*\)".*$$|\1|p' smartctl_res.rc` && \
 	yy=`echo "$$date" | sed -n 's,^20\([0-9][0-9]\).*$$,\1,p'`; yy="$${yy:-XX}" && \
 	verstr="$(PACKAGE_VERSION) $$date $$rev "$(BUILD_INFO) && \
 	d64= && if [ -n '$(builddir_win64)' ]; then d64='-DINPDIR64=$(builddir_win64)/$(PACKAGE)-$(VERSION).win64'; fi && \
-	echo "'$(MAKENSIS)' -V2 -NOCD -DINPDIR=$(distdir_win32) $$d64 -DOUTFILE=$@ -DVERSION=$$version -DYY=$$yy -DVERSTR='$$verstr' $<" && \
-	'$(MAKENSIS)' -V2 -NOCD -DINPDIR=$(distdir_win32) $$d64 -DOUTFILE=$@ -DVERSION=$$version -DYY=$$yy -DVERSTR="$$verstr" $<
-	md5sum $@ > $@.md5
-	sha1sum $@ > $@.sha1
-	sha256sum $@ > $@.sha256
-
-# Build drivedb.h update tool
-update-smart-drivedb.exe: os_win32/update-smart-drivedb.nsi
-	"$(MAKENSIS)" -V2 -NOCD -DBRANCH=$(DRIVEDB_BRANCH) $<
-
-else
-$(distinst_win32):
-	@echo "makensis: command not found. Please install NSIS from http://nsis.sourceforge.net/" 1>&2
-	@exit 1
-endif
+	$(ECHO_V) "'$(MAKENSIS)' -V2 -NOCD -DINPDIR=$(distdir_win32) $$d64 -DOUTFILE=$@ -DVERSION=$$version -DYY=$$yy -DVERSTR='$$verstr' $(srcdir)/os_win32/installer.nsi" && \
+	'$(MAKENSIS)' -V2 -NOCD -DINPDIR=$(distdir_win32) $$d64 -DOUTFILE=$@ -DVERSION=$$version -DYY=$$yy -DVERSTR="$$verstr" $(srcdir)/os_win32/installer.nsi
+	$(AM_V_at)md5sum $@ > $@.md5
+	$(AM_V_at)sha1sum $@ > $@.sha1
+	$(AM_V_at)sha256sum $@ > $@.sha256
 
 cleandist-win32:
-	rm -rf $(distdir_win32) distdir.mkdir
+	rm -f $(distdir_win32).stamp
+	rm -rf $(distdir_win32)
+	rm -f $(distinst_win32) $(distinst_win32).md5 $(distinst_win32).sha1 $(distinst_win32).sha256
+	rm -f $(distzip_win32) $(distzip_win32).md5 $(distzip_win32).sha1 $(distzip_win32).sha256
 
-distdir.mkdir:
-	@test -d $(exedir_win32) || mkdir -pv $(exedir_win32)
-	@test -d $(docdir_win32) || mkdir -pv $(docdir_win32)
-	touch $@
-
-$(exedir_win32)/%.exe: %.exe
-	cp -p $< $@
-	if test -n '$(STRIP)'; then $(STRIP) -s $@; else strip -s $@; fi
-	touch -r $< $@
-
-# strip would break NSIS integrity check
-$(exedir_win32)/update-smart-drivedb.exe: update-smart-drivedb.exe
-	cp -p $< $@
-
-$(exedir_win32)/%.h: $(srcdir)/%.h
-	$(UNIX2DOS) < $< > $@
-	touch -r $< $@
-
-$(exedir_win32)/%.cmd: $(srcdir)/os_win32/%.cmd
-	$(UNIX2DOS) < $< > $@
-	touch -r $< $@
-
-$(exedir_win32)/%.ps1: $(srcdir)/os_win32/%.ps1
-	$(UNIX2DOS) < $< > $@
-	touch -r $< $@
-
-$(docdir_win32)/%.html: %.html
-	$(UNIX2DOS) < $< > $@
-	touch -r $< $@
-
-$(docdir_win32)/%.pdf: %.pdf
-	cp -p $< $@
-
-$(docdir_win32)/%.txt: $(srcdir)/%
-	$(UNIX2DOS) < $< > $@
-	touch -r $< $@
-
-$(docdir_win32)/%.conf: $(srcdir)/%.conf
-	$(UNIX2DOS) < $< > $@
-	touch -r $< $@
-
-$(docdir_win32)/checksums$(win_bits).txt: $(EXEFILES_WIN32)
-	(cd $(exedir_win32) && md5sum *.exe && sha1sum *.exe && sha256sum *.exe) \
-	| $(UNIX2DOS) > $@
+# Build distribution directory.
+# Strip all executables.  Convert all text files to CR/LF.
+# Build checksums*.txt file.
+# Fix header and file timestamps if reproducible build.
+# The latter uses 'stat' and 'touch' enhancements from GNU coreutils.
+$(distdir_win32).stamp: Makefile $(BINFILES_WIN32) $(DOCFILES_WIN32)
+	@$(AM_V_P) || echo '  GEN      $(distdir_win32)/*/*'
+	@rm -f $@
+	$(AM_V_at)rm -rf $(distdir_win32)
+	$(AM_V_at)$(MKDIR_P) $(distdir_win32)/bin
+	$(AM_V_at)$(MKDIR_P) $(distdir_win32)/doc
+	@vrun() { $(ECHO_V) "$$@" && eval "$$@"; } && \
+	strip='$(STRIP)' && strip=$${strip:-strip} && \
+	for src in $(BINFILES_WIN32); do \
+	  dst=$(distdir_win32)/bin/$${src##*/} && \
+	  case $${src##*/} in \
+	    *.exe) vrun $$strip -o $$dst $$src ;; \
+	    *) vrun $(UNIX2DOS) \< $$src \> $$dst && vrun touch -r $$src $$dst ;; \
+	  esac || exit 1; \
+	done && \
+	for src in $(DOCFILES_WIN32); do \
+	  dst=$(distdir_win32)/doc/$${src##*/} && \
+	  case $${src##*/} in [A-Z]*) dst=$$dst.txt ;; esac && \
+	  case $${src##*/} in \
+	    *.pdf) vrun cp -p $$src $$dst ;; \
+	    *) vrun $(UNIX2DOS) \< $$src \> $$dst && vrun touch -r $$src $$dst ;; \
+	   esac || exit 1; \
+	done && \
+	if [ -n '$(SOURCE_DATE_EPOCH)' ]; then \
+	  for exe in $(distdir_win32)/bin/*.exe; do \
+	    vrun $(srcdir)/os_win32/pe32edit.sh -t $(SOURCE_DATE_EPOCH) $$exe || exit 1; \
+	  done; \
+	fi && \
+	$(ECHO_V) ' $$(MD5_SHA1_SHA256_SUM) *.exe *.cmd *.ps1 > $(distdir_win32)/doc/checksums$(win_bits).txt' && \
+	(cd $(distdir_win32)/bin && for algo in md5 sha1 sha256; do $${algo}sum *.exe *.cmd *.ps1; done) \
+	| $(UNIX2DOS) > $(distdir_win32)/doc/checksums$(win_bits).txt && \
+	if [ -n '$(SOURCE_DATE_EPOCH)' ]; then \
+	  touch -d @$(SOURCE_DATE_EPOCH) source_date.stamp && \
+	  find $(distdir_win32) -newer source_date.stamp | while read f; do \
+	    vrun touch -r source_date.stamp $$f || exit 1; \
+	  done && \
+	  rm -f source_date.stamp; \
+	fi
+	@touch $@
 
 # Build non-console version of smartctl for GSmartControl.
-# The script below changes the word at offset 220 (Subsystem) from 3
-# (Console) to 2 (GUI) in a copy of smartctl.exe.
-# This will be changed when a tool (like 'editbin') is available in
-# the Cygwin distribution
 smartctl-nc.exe: smartctl.exe
+	$(AM_V_GEN)
 	@rm -f $@
-	cp -p smartctl.exe $@.tmp
-	@if test `od -A n -j 220 -N 2 -d $@.tmp` -eq 3; then :; \
-	  else echo "invalid EXE header"; exit 1; fi
-	@echo "editbin /subsystem:windows $@.tmp"
-	@echo -ne '\002' | dd bs=1 seek=220 count=1 conv=notrunc of=$@.tmp 2>/dev/null
-	@if test `od -A n -j 220 -N 2 -d $@.tmp` -eq 2; then :; \
-	  else echo "EXE patch failed"; exit 1; fi
-	mv -f $@.tmp $@
+	$(AM_V_at)cp -p smartctl.exe $@.tmp
+	$(AM_V_at)$(srcdir)/os_win32/pe32edit.sh -s 2 $@.tmp
+	$(AM_V_at)mv -f $@.tmp $@
 
 # Build runcmd?.exe and wtssendmsg.exe
 runcmd.o: os_win32/runcmd.c
-	$(CC) -c -Os $<
+	$(AM_V_CC)$(CC) -c -Os $(srcdir)/os_win32/runcmd.c
 
 runcmdu.exe: runcmd.o runcmdu_res.o
-	$(CC) -o $@ $^
+	$(AM_V_CCLD)$(CC) -o $@ runcmd.o runcmdu_res.o
 
 runcmda.exe: runcmd.o runcmda_res.o
-	$(CC) -o $@ $^
+	$(AM_V_CCLD)$(CC) -o $@ runcmd.o runcmda_res.o
 
 wtssendmsg.exe: os_win32/wtssendmsg.c wtssendmsg_res.o
-	$(CC) -Os -o $@ $^ -lwtsapi32
+	$(AM_V_CCLD)$(CC) -Os -o $@ $(srcdir)/os_win32/wtssendmsg.c wtssendmsg_res.o -lwtsapi32
 
-# Build os_win32/vc14/{config.h,smart*.rc,svnversion.h} for MSVC14 from MinGW files
+# Build drivedb.h update script
+update-smart-drivedb.ps1: os_win32/update-smart-drivedb.ps1.in config.status
+	$(AM_V_GEN)$(SHELL) ./config.status -q --file=$@:$(srcdir)/os_win32/update-smart-drivedb.ps1.in
 
-vcver = 14
+# MSVC Version to change in make command line
+vc = 17
+vcver = $(vc)
+
+phony += check-vc-version clean-vc config-vc distclean-vc maintainer-clean-vc
+
+check-vc-version:
+	@case '$(vcver)' in \
+	  16|17) test -d '$(srcdir)/os_win32/vc$(vcver)' || \
+	    { echo '$(srcdir)/os_win32/vc$(vcver): Not found (not included in src tarball)' >&2; exit 1; } ;; \
+	  *) echo 'Usage: $(MAKE) vc=16|17 config-vc clean-vc distclean-vc maintainer-clean-vc'; exit 1 ;; \
+	esac
+
+# Build os_win32/vcNN/{config.h,smart*.rc,svnversion.h} for MSVCNN from MinGW files
 
 CONFIG_VC_FILES = \
         $(srcdir)/os_win32/vc$(vcver)/config.h \
@@ -1044,34 +1129,39 @@ CONFIG_VC_FILES = \
         $(srcdir)/os_win32/vc$(vcver)/smartd_res.rc \
         $(srcdir)/os_win32/vc$(vcver)/svnversion.h
 
-config-vc$(vcver): $(CONFIG_VC_FILES)
+config-vc: check-vc-version $(CONFIG_VC_FILES)
 
 $(srcdir)/os_win32/vc$(vcver)/config.h: config.h Makefile
-	sed -e '1i/* os_win32/vc$(vcver)/config.h.  Generated from config.h by Makefile.  */' \
-	    -e 's,^#define HAVE_\(ATTR_PACKED\|GETTIMEOFDAY\|[DK_]*NTDDDISK_H\|LONG_DOUBLE_WIDER\|STRINGS_H\|UNISTD_H\) 1$$,/* #undef HAVE_\1 */ /* VC$(vcver) */,' \
-	    -e 's,^\(#define SMARTMONTOOLS_BUILD_HOST "[^-]*\)[^"]*,\1-pc-w32vc$(vcver),' $< > $@
+	$(AM_V_GEN)sed \
+	  -e '1i/* os_win32/vc$(vcver)/config.h.  Generated from config.h by Makefile.  */' \
+	  -e 's,^#define HAVE_\(ATTR_PACKED\|CLOCK_GETTIME\|GETTIMEOFDAY\|__INT128\|LONG_DOUBLE_WIDER\|STRINGS_H\|UNISTD_H\) 1.*$$,/* #undef HAVE_\1 */ /* VC$(vcver) */,' \
+	  -e 's,^\(#define SMARTMONTOOLS_BUILD_HOST "[^-]*\)[^"]*,\1-pc-w32vc$(vcver),' config.h > $@
 
 $(srcdir)/os_win32/vc$(vcver)/svnversion.h: svnversion.h
-	cp $< $@
+	$(AM_V_GEN)cp svnversion.h $@
 
 $(srcdir)/os_win32/vc$(vcver)/smartctl_res.rc: smartctl_res.rc
-	sed '/^1 24 /d' $< > $@
+	$(AM_V_GEN)sed '/^1 24 /d' smartctl_res.rc > $@
 
 $(srcdir)/os_win32/vc$(vcver)/smartd_res.rc: smartd_res.rc
-	sed '/^1 24 /d' $< > $@
+	$(AM_V_GEN)sed '/^1 24 /d' smartd_res.rc > $@
 
-clean-vc$(vcver):
-	rm -f $(srcdir)/os_win32/vc$(vcver)/smartmontools.VC.VC.opendb
-	rm -f $(srcdir)/os_win32/vc$(vcver)/smartmontools.VC.db
+clean-vc: check-vc-version
+	rm -f $(srcdir)/os_win32/vc$(vcver)/.vs/smartmontools/v$(vcver)/Browse.VC.opendb
+	rm -f $(srcdir)/os_win32/vc$(vcver)/.vs/smartmontools/v$(vcver)/*.VC.db*
+	rm -rf $(srcdir)/os_win32/vc$(vcver)/.vs/smartmontools/v$(vcver)/ipch
 	rm -f $(srcdir)/os_win32/vc$(vcver)/syslogevt.h
 	rm -rf $(srcdir)/os_win32/vc$(vcver)/Debug
+	rm -rf $(srcdir)/os_win32/vc$(vcver)/Debug-static
 	rm -rf $(srcdir)/os_win32/vc$(vcver)/Release
+	rm -rf $(srcdir)/os_win32/vc$(vcver)/Release-static
 	rm -rf $(srcdir)/os_win32/vc$(vcver)/x64
 
-distclean-vc$(vcver): clean-vc$(vcver)
+distclean-vc: clean-vc
 	rm -f $(CONFIG_VC_FILES)
 
-maintainer-clean-vc$(vcver): distclean-vc$(vcver)
+maintainer-clean-vc: distclean-vc
+	rm -f $(srcdir)/os_win32/vc$(vcver)/*.vcxproj.user
 	rm -rf $(srcdir)/os_win32/vc$(vcver)/.vs
 
 endif
@@ -1088,7 +1178,7 @@ $(pkg_darwin):
 	${MAKE} install DESTDIR=$(distdir_darwin)/root
 	@cp $(srcdir)/os_darwin/pkg/root/usr/local/sbin/smart-pkg-uninstall $(distdir_darwin)/root$(sbindir)
 	@mkdir -p $(distdir_darwin)/pkg
-	@( cd $(distdir_darwin)/root && find . | cpio -o --format odc --owner 0:80 | gzip -c ) > $(distdir_darwin)/pkg/Payload
+	@( cd $(distdir_darwin)/root && find .|xargs touch -d "@${SOURCE_DATE_EPOCH}" && find . | cpio --reproducible -o --format odc --owner 0:80 | gzip -n -c ) > $(distdir_darwin)/pkg/Payload
 	PAYLOAD_FILES=`find $(distdir_darwin)/root | wc -l` &&\
 	PAYLOAD_SIZEKB=`du -BK  -s $(distdir_darwin)/root|${AWK} '{print $$1}'|tr -d 'K'` &&\
 	sed -e "s|@version@|$(VERSION)|" -e "s|@files@|$${PAYLOAD_FILES}|" \
@@ -1101,12 +1191,13 @@ $(pkg_darwin):
 	@cp $(srcdir)/COPYING $(distdir_darwin)/pkg/Resources/English.lproj/license.txt
 	@mkbom -u 0 -g 80 $(distdir_darwin)/root $(distdir_darwin)/pkg/Bom
 	@mkdir -p $(distdir_darwin)/dmg
-	@( cd $(distdir_darwin)/pkg && xar --compression none -cf "../dmg/$(pkg_darwin)" * )
+	@( cd $(distdir_darwin)/pkg && xar --distribution --compression none -cf "../dmg/$(pkg_darwin)" * )
 
 # build darwon dmg image
 $(dmg_darwin):
 	@cp $(srcdir)/os_darwin/pkg/installer/README.html $(distdir_darwin)/dmg
-	@mkisofs -V 'smartmontools' -no-pad -r -apple -o $(distdir_darwin)/smartmontools-$(VERSION).iso \
+	@find $(distdir_darwin)/dmg | xargs touch -d "@${SOURCE_DATE_EPOCH}"
+	@xorriso -as mkisofs -V 'smartmontools' -no-pad -r -o $(distdir_darwin)/smartmontools-$(VERSION).iso \
 		-hfs-bless "$(distdir_darwin)/dmg/" "$(distdir_darwin)/dmg/"
 	@dmg dmg $(distdir_darwin)/smartmontools-$(VERSION).iso $(dmg_darwin)
 	md5sum $@ > $@.md5

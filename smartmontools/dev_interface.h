@@ -3,7 +3,7 @@
  *
  * Home page of code is: https://www.smartmontools.org
  *
- * Copyright (C) 2008-19 Christian Franke
+ * Copyright (C) 2008-25 Christian Franke
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
@@ -75,7 +75,7 @@ protected:
   explicit smart_device(do_not_use_in_implementation_classes);
 
 public:
-  virtual ~smart_device() throw();
+  virtual ~smart_device();
 
 // Attributes
 public:
@@ -575,6 +575,13 @@ protected:
 
 struct scsi_cmnd_io;
 
+enum scsi_cmd_support
+{
+  SC_SUPPORT_UNKNOWN = 0,
+  SC_NO_SUPPORT,
+  SC_SUPPORT,
+};
+
 /// SCSI device access
 class scsi_device
 : virtual public /*extends*/ smart_device
@@ -596,6 +603,18 @@ public:
   bool use_rcap16() const
     { return rcap16_first; }
 
+  void set_spc4_or_higher() { spc4_or_above = true; }
+
+  bool is_spc4_or_higher() const { return spc4_or_above; }
+
+  bool query_cmd_support();
+
+  bool checked_cmd_support() const { return rsoc_queried; }
+
+  enum scsi_cmd_support cmd_support_level(uint8_t opcode, bool sa_valid,
+                                          uint16_t sa,
+                                          bool for_lsense_spc = false) const;
+
 protected:
   /// Hide/unhide SCSI interface.
   void hide_scsi(bool hide = true)
@@ -604,11 +623,28 @@ protected:
   /// Default constructor, registers device as SCSI.
   scsi_device()
     : smart_device(never_called),
-      rcap16_first(false)
+      rcap16_first(false),
+      spc4_or_above(false),
+      rsoc_queried(false),
+      rsoc_sup(SC_SUPPORT_UNKNOWN),
+      logsense_sup(SC_SUPPORT_UNKNOWN),
+      logsense_spc_sup(SC_SUPPORT_UNKNOWN),
+      rcap16_sup(SC_SUPPORT_UNKNOWN),
+      rdefect10_sup(SC_SUPPORT_UNKNOWN),
+      rdefect12_sup(SC_SUPPORT_UNKNOWN)
     { hide_scsi(false); }
 
 private:
   bool rcap16_first;
+  bool spc4_or_above;
+
+  bool rsoc_queried;
+  scsi_cmd_support rsoc_sup;
+  scsi_cmd_support logsense_sup;
+  scsi_cmd_support logsense_spc_sup;
+  scsi_cmd_support rcap16_sup;
+  scsi_cmd_support rdefect10_sup;
+  scsi_cmd_support rdefect12_sup;
 };
 
 
@@ -716,7 +752,7 @@ public:
     : m_dev(dev), m_base_dev(base_dev) { }
 
   /// Destructor deletes device object.
-  ~any_device_auto_ptr() throw()
+  ~any_device_auto_ptr()
     { reset(); }
 
   /// Assign a new pointer.
@@ -801,7 +837,7 @@ public:
   smart_device_list()
     { }
 
-  ~smart_device_list() throw()
+  ~smart_device_list()
     {
       for (unsigned i = 0; i < m_list.size(); i++)
         delete m_list[i];
@@ -881,7 +917,7 @@ public:
   smart_interface()
     { }
 
-  virtual ~smart_interface() throw()
+  virtual ~smart_interface()
     { }
 
   /// Return info string about build host and/or OS version.
@@ -899,12 +935,6 @@ public:
   /// function is allowed to print examples to stdout.
   /// TODO: Remove this hack.
   virtual std::string get_app_examples(const char * appname);
-
-  /// Get microseconds since some unspecified starting point.
-  /// Used only for command duration measurements in debug outputs.
-  /// Returns -1 if unsupported.
-  /// Default implementation uses clock_gettime(), gettimeofday() or ftime().
-  virtual int64_t get_timer_usec();
 
   /// Disable/Enable system auto standby/sleep mode.
   /// Return false if unsupported or if system is running
@@ -930,6 +960,14 @@ public:
   /// Printf()-like formatting is supported.
   /// Returns false always to allow use as a return expression.
   bool set_err(int no, const char * msg, ...)
+    __attribute_format_printf(3, 4);
+
+  /// Set last error number and message.
+  /// Printf()-like formatting is supported.
+  /// Returns nullptr always to allow use as a return expression
+  /// of any pointer type.
+  // (Not using 'std::nullptr_t' because it requires <cstddef>)
+  decltype(nullptr) set_err_np(int no, const char * msg, ...)
     __attribute_format_printf(3, 4);
 
   /// Set last error info struct.
@@ -978,6 +1016,16 @@ public:
   virtual bool scan_smart_devices(smart_device_list & devlist,
     const smart_devtype_list & types, const char * pattern = 0);
 
+  /// Return unique device name which is (only) suitable for duplicate detection.
+  /// Default implementation resolves symlinks on POSIX systems and appends
+  /// " [type]" if is_raid_dev_type(type)' returns true.
+  virtual std::string get_unique_dev_name(const char * name, const char * type) const;
+
+  /// Return true if the 'type' string contains a RAID drive number.
+  /// Default implementation returns true if 'type' starts with '[^,]+,[0-9]'
+  /// but not with 'sat,'.
+  virtual bool is_raid_dev_type(const char * type) const;
+
 protected:
   /// Return standard ATA device.
   virtual ata_device * get_ata_device(const char * name, const char * type) = 0;
@@ -1007,6 +1055,7 @@ protected:
   /// Return 0 and delete 'scsidev' on error.
   virtual smart_device * get_scsi_passthrough_device(const char * type, scsi_device * scsidev);
 
+public:
   /// Return ATA->SCSI filter for a SAT or USB 'type'.
   /// Device 'scsidev' is used for SCSI access.
   /// Return 0 and delete 'scsidev' on error.
@@ -1014,12 +1063,17 @@ protected:
   virtual ata_device * get_sat_device(const char * type, scsi_device * scsidev);
   //{ implemented in scsiata.cpp }
 
+protected:
   /// Return NVMe->SCSI filter for a SNT or USB 'type'.
   /// Device 'scsidev' is used for SCSI access.
   /// Return 0 and delete 'scsidev' on error.
   /// Override only if platform needs special handling.
   virtual nvme_device * get_snt_device(const char * type, scsi_device * scsidev);
   //{ implemented in scsinvme.cpp }
+
+  /// Return filter for Intelliprop controllers.
+  virtual ata_device * get_intelliprop_device(const char * type, ata_device * atadev);
+  //{ implemented in dev_intelliprop.cpp }
 
   /// Return JMB93x->ATA filter.
   /// Device 'smartdev' is used for ATA or SCSI R/W access.

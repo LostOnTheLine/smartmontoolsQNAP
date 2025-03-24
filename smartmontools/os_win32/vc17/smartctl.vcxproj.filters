@@ -46,7 +46,7 @@
     <ClCompile Include="..\..\dev_ata_cmd_set.cpp" />
     <ClCompile Include="..\..\dev_interface.cpp" />
     <ClCompile Include="..\..\dev_jmb39x_raid.cpp" />
-	<ClCompile Include="..\..\dev_qnap_tr004.cpp" />
+    <ClCompile Include="..\..\dev_qnap_tr004.cpp" />
     <ClCompile Include="..\..\dev_legacy.cpp" />
     <ClCompile Include="..\..\knowndrives.cpp" />
     <ClCompile Include="..\..\os_darwin.cpp" />
@@ -75,6 +75,8 @@
     <ClCompile Include="..\popen_win32.cpp">
       <Filter>os_win32</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\farmcmds.cpp" />
+    <ClCompile Include="..\..\farmprint.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\wmiquery.h">
@@ -110,7 +112,6 @@
     <ClInclude Include="svnversion.h" />
     <ClInclude Include="..\..\nvmecmds.h" />
     <ClInclude Include="..\..\nvmeprint.h" />
-    <ClInclude Include="..\..\dev_intelliprop.h" />
     <ClInclude Include="..\..\json.h" />
     <ClInclude Include="..\..\static_assert.h" />
     <ClInclude Include="..\..\getopt\getopt_int.h">
@@ -125,6 +126,12 @@
     <ClInclude Include="..\popen.h">
       <Filter>os_win32</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\sg_unaligned.h" />
+    <ClInclude Include="..\..\freebsd_nvme_ioctl.h" />
+    <ClInclude Include="..\..\linux_nvme_ioctl.h" />
+    <ClInclude Include="..\..\netbsd_nvme_ioctl.h" />
+    <ClInclude Include="..\..\farmcmds.h" />
+    <ClInclude Include="..\..\farmprint.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\installer.nsi">

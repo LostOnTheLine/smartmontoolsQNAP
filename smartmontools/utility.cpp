@@ -4,7 +4,7 @@
  * Home page of code is: https://www.smartmontools.org
  *
  * Copyright (C) 2002-12 Bruce Allen
- * Copyright (C) 2008-20 Christian Franke
+ * Copyright (C) 2008-25 Christian Franke
  * Copyright (C) 2000 Michael Cornwell <cornwell@acm.org>
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
@@ -42,6 +42,19 @@
 #include "dev_interface.h"
 #include "sg_unaligned.h"
 
+#ifndef USE_CLOCK_MONOTONIC
+#ifdef __MINGW32__
+// If MinGW-w64 < 9.0.0 or Windows < 8, GetSystemTimeAsFileTime() is used for
+// std::chrono::high_resolution_clock.  This provides only 1/64s (>15ms) resolution.
+// CLOCK_MONOTONIC uses QueryPerformanceCounter() which provides <1us resolution.
+#define USE_CLOCK_MONOTONIC 1
+#else
+// Use std::chrono::high_resolution_clock.
+#include <chrono>
+#define USE_CLOCK_MONOTONIC 0
+#endif
+#endif // USE_CLOCK_MONOTONIC
+
 const char * utility_cpp_cvsid = "$Id$"
   UTILITY_H_CVSID;
 
@@ -70,20 +83,28 @@ const char * packet_types[] = {
 #endif
 
 // Make version information string
-std::string format_version_info(const char * prog_name, bool full /*= false*/)
+// lines: 1: version only, 2: version+copyright, >=3: full information
+std::string format_version_info(const char * prog_name, int lines /* = 2 */)
 {
   std::string info = strprintf(
-    "%s " PACKAGE_VERSION " "
+    "%s "
+#ifndef SMARTMONTOOLS_RELEASE_DATE
+      "pre-"
+#endif
+      PACKAGE_VERSION " "
 #ifdef SMARTMONTOOLS_SVN_REV
       SMARTMONTOOLS_SVN_DATE " r" SMARTMONTOOLS_SVN_REV
 #else
       "(build date " __DATE__ ")" // checkout without expansion of Id keywords
 #endif
-      " [%s] " BUILD_INFO "\n"
-    "Copyright (C) 2002-20, Bruce Allen, Christian Franke, www.smartmontools.org\n",
+      " [%s] " BUILD_INFO "\n",
     prog_name, smi()->get_os_version_str().c_str()
   );
-  if (!full)
+  if (lines <= 1)
+    return info;
+
+  info += "Copyright (C) 2002-25, Bruce Allen, Christian Franke, www.smartmontools.org\n";
+  if (lines == 2)
     return info;
 
   info += "\n";
@@ -92,12 +113,19 @@ std::string format_version_info(const char * prog_name, bool full /*= false*/)
     "software, and you are welcome to redistribute it under\n"
     "the terms of the GNU General Public License; either\n"
     "version 2, or (at your option) any later version.\n"
-    "See http://www.gnu.org for further details.\n"
+    "See https://www.gnu.org for further details.\n"
     "\n"
+#ifndef SMARTMONTOOLS_RELEASE_DATE
+    "smartmontools pre-release " PACKAGE_VERSION "\n"
+#else
     "smartmontools release " PACKAGE_VERSION
       " dated " SMARTMONTOOLS_RELEASE_DATE " at " SMARTMONTOOLS_RELEASE_TIME "\n"
+#endif
 #ifdef SMARTMONTOOLS_SVN_REV
     "smartmontools SVN rev " SMARTMONTOOLS_SVN_REV
+#ifdef SMARTMONTOOLS_GIT_HASH
+      " (git " SMARTMONTOOLS_GIT_HASH ")"
+#endif
       " dated " SMARTMONTOOLS_SVN_DATE " at " SMARTMONTOOLS_SVN_TIME "\n"
 #else
     "smartmontools SVN rev is unknown\n"
@@ -106,25 +134,17 @@ std::string format_version_info(const char * prog_name, bool full /*= false*/)
     "smartmontools build with: "
 
 #define N2S_(s) #s
-#define N2S(s) "(" N2S_(s) ")"
-#if   __cplusplus >  201703
-                               "C++2x" N2S(__cplusplus)
+#define N2S(s) N2S_(s)
+#if   __cplusplus == 202002
+                               "C++20"
 #elif __cplusplus == 201703
                                "C++17"
-#elif __cplusplus >  201402
-                               "C++14" N2S(__cplusplus)
 #elif __cplusplus == 201402
                                "C++14"
-#elif __cplusplus >  201103
-                               "C++11" N2S(__cplusplus)
 #elif __cplusplus == 201103
                                "C++11"
-#elif __cplusplus >  199711
-                               "C++98" N2S(__cplusplus)
-#elif __cplusplus == 199711
-                               "C++98"
 #else
-                               "C++"   N2S(__cplusplus)
+                               "C++(" N2S(__cplusplus) ")"
 #endif
 #undef N2S
 #undef N2S_
@@ -132,11 +152,24 @@ std::string format_version_info(const char * prog_name, bool full /*= false*/)
 #if defined(__GNUC__) && defined(__VERSION__) // works also with CLang
                                      ", GCC " __VERSION__
 #endif
+#ifdef __MINGW64_VERSION_STR
+                                     ", MinGW-w64 " __MINGW64_VERSION_STR
+#endif
                                                           "\n"
     "smartmontools configure arguments:"
+#ifdef SOURCE_DATE_EPOCH
+                                      " [hidden in reproducible builds]\n"
+    "reproducible build SOURCE_DATE_EPOCH: "
+#endif
   ;
+#ifdef SOURCE_DATE_EPOCH
+  char ts[32]; struct tm tmbuf;
+  strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", time_to_tm_local(&tmbuf, SOURCE_DATE_EPOCH));
+  info += strprintf("%u (%s)", (unsigned)SOURCE_DATE_EPOCH, ts);
+#else
   info += (sizeof(SMARTMONTOOLS_CONFIGURE_ARGS) > 1 ?
            SMARTMONTOOLS_CONFIGURE_ARGS : " [no arguments given]");
+#endif
   info += '\n';
 
   return info;
@@ -187,11 +220,22 @@ void FixGlibcTimeZoneBug(){
     tzset();
   }
 #elif _WIN32
-  if (!getenv("TZ")) {
+  const char * tz = getenv("TZ");
+  if (!tz) {
     putenv("TZ=GMT");
     tzset();
     putenv("TZ=");  // empty value removes TZ, putenv("TZ") does nothing
     tzset();
+  }
+  else {
+    static const regular_expression tzrex("[A-Z]{3}[-+]?[0-9]+([A-Z]{3,4})?");
+    // tzset() from MSVCRT only supports the above basic syntax of TZ.
+    // Otherwise the timezone settings are set to bogus values.
+    // Unset TZ and revert to system default timezone in these cases.
+    if (!tzrex.full_match(tz)) {
+      putenv("TZ=");
+      tzset();
+    }
   }
 #elif defined (__SVR4) && defined (__sun)
   // In Solaris, putenv("TZ=") sets null string and invalid timezone.
@@ -282,13 +326,19 @@ const char *packetdevicetype(int type){
 struct tm * time_to_tm_local(struct tm * tp, time_t t)
 {
 #ifndef _WIN32
-  // POSIX (missing in MSVRCT, C and C++)
+  // POSIX, C23 - missing in MSVRCT, C++ and older C.
   if (!localtime_r(&t, tp))
     throw std::runtime_error("localtime_r() failed");
-#else
-  // MSVCRT (missing in POSIX, C11 variant differs)
-  if (localtime_s(tp, &t))
+#elif 0 // defined(__STDC_LIB_EXT1__)
+  // C11 - requires #define __STDC_WANT_LIB_EXT1__ before <time.h>.
+  // Missing in POSIX and C++, MSVCRT variant differs.
+  if (!localtime_s(&t, tp))
     throw std::runtime_error("localtime_s() failed");
+#else
+  // MSVCRT - 64-bit variant avoids conflict with the above C11 variant.
+  __time64_t t64 = t;
+  if (_localtime64_s(tp, &t64))
+    throw std::runtime_error("_localtime64_s() failed");
 #endif
   return tp;
 }
@@ -363,7 +413,7 @@ void syserror(const char *message){
     const char *errormessage=strerror(errno);
     
     // Check that caller has handed a sensible string, and provide
-    // appropriate output. See perrror(3) man page to understand better.
+    // appropriate output. See perror(3) man page to understand better.
     if (message && *message)
       pout("%s: %s\n",message, errormessage);
     else
@@ -811,6 +861,21 @@ const char * uint128_hilo_to_str(char * str, int strsize, uint64_t value_hi, uin
 
 #endif // HAVE___INT128
 
+// Get microseconds since some unspecified starting point.
+long long get_timer_usec()
+{
+#if USE_CLOCK_MONOTONIC
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts))
+    return -1;
+  return ts.tv_sec * 1000000LL + ts.tv_nsec / 1000;
+#else
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+    std::chrono::high_resolution_clock::now().time_since_epoch()
+  ).count();
+#endif
+}
+
 // Runtime check of byte ordering, throws on error.
 static void check_endianness()
 {
@@ -832,40 +897,7 @@ static void check_endianness()
     throw std::logic_error("CPU endianness does not match compile time test");
 }
 
-#ifndef HAVE_WORKING_SNPRINTF
-// Some versions of (v)snprintf() don't append null char (MSVCRT.DLL),
-// and/or return -1 on output truncation (glibc <= 2.0.6).
-// Below are sane replacements substituted by #define in utility.h.
-
-#undef vsnprintf
-#if defined(_WIN32) && defined(_MSC_VER)
-#define vsnprintf _vsnprintf
-#endif
-
-int safe_vsnprintf(char *buf, int size, const char *fmt, va_list ap)
-{
-  int i;
-  if (size <= 0)
-    return 0;
-  i = vsnprintf(buf, size, fmt, ap);
-  if (0 <= i && i < size)
-    return i;
-  buf[size-1] = 0;
-  return strlen(buf); // Note: cannot detect for overflow, not necessary here.
-}
-
-int safe_snprintf(char *buf, int size, const char *fmt, ...)
-{
-  int i; va_list ap;
-  va_start(ap, fmt);
-  i = safe_vsnprintf(buf, size, fmt, ap);
-  va_end(ap);
-  return i;
-}
-
-static void check_snprintf() {}
-
-#elif defined(__GNUC__) && (__GNUC__ >= 7)
+#if defined(__GNUC__) && (__GNUC__ >= 7)
 
 // G++ 7+: Assume sane implementation and avoid -Wformat-truncation warning
 static void check_snprintf() {}
@@ -881,7 +913,7 @@ static void check_snprintf()
     throw std::logic_error("Function snprintf() does not conform to C99");
 }
 
-#endif // HAVE_WORKING_SNPRINTF
+#endif
 
 // Runtime check of ./configure result, throws on error.
 void check_config()

@@ -3,7 +3,7 @@
  *
  * Home page of code is: https://www.smartmontools.org
  *
- * Copyright (C) 2016-19 Christian Franke
+ * Copyright (C) 2016-23 Christian Franke
  *
  * Original code from <linux/nvme.h>:
  *   Copyright (C) 2011-2014 Intel Corporation
@@ -18,6 +18,8 @@
 
 #include "static_assert.h"
 
+#include <errno.h>
+#include <stddef.h>
 #include <stdint.h>
 
 // The code below was originally imported from <linux/nvme.h> include file from
@@ -213,6 +215,7 @@ enum nvme_admin_opcode {
 //nvme_admin_ns_mgmt       = 0x0d,
 //nvme_admin_activate_fw   = 0x10,
 //nvme_admin_download_fw   = 0x11,
+  nvme_admin_dev_self_test = 0x14, // NVMe 1.3
 //nvme_admin_ns_attach     = 0x15,
 //nvme_admin_format_nvm    = 0x80,
 //nvme_admin_security_send = 0x81,
@@ -222,9 +225,36 @@ enum nvme_admin_opcode {
 // END: From <linux/nvme.h>
 ////////////////////////////////////////////////////////////////////////////
 
+// Figure 213 of NVM Express(TM) Base Specification, revision 2.0a, July 2021
+struct nvme_self_test_result {
+  uint8_t   self_test_status;
+  uint8_t   segment;
+  uint8_t   valid;
+  uint8_t   rsvd3;
+  uint8_t   power_on_hours[8]; // unaligned LE 64
+  uint32_t  nsid;
+  uint8_t   lba[8]; // unaligned LE 64
+  uint8_t   status_code_type;
+  uint8_t   status_code;
+  uint8_t   vendor_specific[2];
+};
+STATIC_ASSERT(sizeof(nvme_self_test_result) == 28);
+
+// Figure 212 of NVM Express(TM) Base Specification, revision 2.0a, July 2021
+struct nvme_self_test_log {
+  uint8_t   current_operation;
+  uint8_t   current_completion;
+  uint8_t   rsvd2[2];
+  nvme_self_test_result results[20]; // [0] = newest
+};
+STATIC_ASSERT(sizeof(nvme_self_test_log) == 564);
+
 } // namespace smartmontools
 
 class nvme_device;
+
+// Broadcast namespace ID.
+constexpr uint32_t nvme_broadcast_nsid = 0xffffffffU;
 
 // Print NVMe debug messages?
 extern unsigned char nvme_debugmode;
@@ -236,14 +266,40 @@ bool nvme_read_id_ctrl(nvme_device * device, smartmontools::nvme_id_ctrl & id_ct
 bool nvme_read_id_ns(nvme_device * device, unsigned nsid, smartmontools::nvme_id_ns & id_ns);
 
 // Read NVMe log page with identifier LID.
-bool nvme_read_log_page(nvme_device * device, unsigned char lid, void * data,
-	       		unsigned size, bool broadcast_nsid);
+unsigned nvme_read_log_page(nvme_device * device, unsigned nsid, unsigned char lid,
+  void * data, unsigned size, bool lpo_sup, unsigned offset = 0);
 
 // Read NVMe Error Information Log.
-bool nvme_read_error_log(nvme_device * device, smartmontools::nvme_error_log_page * error_log,
-  unsigned num_entries);
+unsigned nvme_read_error_log(nvme_device * device, smartmontools::nvme_error_log_page * error_log,
+  unsigned num_entries, bool lpo_sup);
 
 // Read NVMe SMART/Health Information log.
-bool nvme_read_smart_log(nvme_device * device, smartmontools::nvme_smart_log & smart_log);
+bool nvme_read_smart_log(nvme_device * device, uint32_t nsid,
+  smartmontools::nvme_smart_log & smart_log);
+
+// Read NVMe Self-test Log.
+bool nvme_read_self_test_log(nvme_device * device, uint32_t nsid,
+  smartmontools::nvme_self_test_log & self_test_log);
+
+// Start Self-test
+bool nvme_self_test(nvme_device * device, uint8_t stc, uint32_t nsid);
+
+// Return true if NVMe status indicates an error.
+constexpr bool nvme_status_is_error(uint16_t status)
+  { return !!(status & 0x07ff); }
+
+// Return errno for NVMe status SCT/SC fields: 0, EINVAL or EIO.
+int nvme_status_to_errno(uint16_t status);
+
+// Return error message for NVMe status SCT/SC fields or nullptr if unknown.
+const char * nvme_status_to_str(uint16_t status);
+
+// Return error message for NVMe status SCT/SC fields or explanatory message if unknown.
+const char * nvme_status_to_info_str(char * buf, size_t bufsize, uint16_t status);
+
+// Version of above for fixed size buffers.
+template <size_t SIZE>
+inline const char * nvme_status_to_info_str(char (& buf)[SIZE], unsigned status)
+  { return nvme_status_to_info_str(buf, SIZE, status); }
 
 #endif // NVMECMDS_H

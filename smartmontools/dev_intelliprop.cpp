@@ -12,12 +12,10 @@
 
 #include "atacmds.h" // ATTR_PACKED, STATIC_ASSERT, ata_debugmode
 #include "dev_interface.h"
-#include "dev_intelliprop.h"
 #include "dev_tunnelled.h"
 #include <errno.h>
 
-const char * dev_intelliprop_cpp_cvsid = "$Id$"
-  DEV_INTELLIPROP_H_CVSID;
+const char * dev_intelliprop_cpp_cvsid = "$Id$";
 
 //Vendor Specific log addresses
 #define LOG_C0           0xc0
@@ -248,11 +246,11 @@ class intelliprop_device
 public:
   intelliprop_device(smart_interface * intf, unsigned phydrive, ata_device * atadev);
 
-  virtual ~intelliprop_device() throw();
+  virtual ~intelliprop_device();
 
-  virtual bool open();
+  virtual bool open() override;
 
-  virtual bool ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out);
+  virtual bool ata_pass_through(const ata_cmd_in & in, ata_cmd_out & out) override;
 
 private:
   unsigned m_phydrive;
@@ -267,7 +265,7 @@ intelliprop_device::intelliprop_device(smart_interface * intf, unsigned phydrive
   set_info().info_name = strprintf("%s [intelliprop_disk_%u]", atadev->get_info_name(), phydrive);
 }
 
-intelliprop_device::~intelliprop_device() throw()
+intelliprop_device::~intelliprop_device()
 {
 }
 
@@ -291,7 +289,24 @@ bool intelliprop_device::ata_pass_through(const ata_cmd_in & in, ata_cmd_out & o
 }
 }//namespace
 
-ata_device * get_intelliprop_device(smart_interface * intf, unsigned phydrive, ata_device * atadev)
+ata_device * smart_interface::get_intelliprop_device(const char * type, ata_device * atadev)
 {
-  return new intelliprop::intelliprop_device(intf, phydrive, atadev);
+  // Take temporary ownership of 'atadev' to delete it on error
+  ata_device_auto_ptr atadev_holder(atadev);
+
+  unsigned phydrive = ~0; int n = -1;
+  sscanf(type, "intelliprop,%u,force%n", &phydrive, &n);
+  // TODO: Remove after smartmontools 7.4
+  if (n != (int)strlen(type))
+    return set_err_np(EINVAL,
+      "The device type 'intelliprop' is deprecated and will be removed in a\n"
+      "future version of smartmontools.  If this device type is still needed, please\n"
+      "use '-d intelliprop,N,force' and inform " PACKAGE_BUGREPORT                     );
+  if (phydrive > 3)
+    return set_err_np(EINVAL, "Option '-d intelliprop,N,force' must have 0 <= N <= 3");
+
+  ata_device * itldev = new intelliprop::intelliprop_device(this, phydrive, atadev);
+  // 'atadev' is now owned by 'itldev'
+  atadev_holder.release();
+  return itldev;
 }

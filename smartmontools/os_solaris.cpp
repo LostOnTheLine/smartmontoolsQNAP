@@ -1,7 +1,7 @@
 /*
- * os_solaris.c
+ * os_solaris.cpp
  *
- * Home page of code is: http://www.smartmontools.org
+ * Home page of code is: https://www.smartmontools.org
  *
  * Copyright (C) 2003-08 SAWADA Keiji
  * Copyright (C) 2003-15 Casper Dik
@@ -15,7 +15,10 @@
 #include <dirent.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/param.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 // These are needed to define prototypes for the functions defined below
 #include "config.h"
@@ -24,41 +27,7 @@
 #include "scsicmds.h"
 #include "utility.h"
 
-// This is to include whatever prototypes you define in os_solaris.h
-#include "os_solaris.h"
-
-#define ARGUSED(x) ((void)(x))
-
-const char *os_XXXX_c_cvsid="$Id$" \
-ATACMDS_H_CVSID CONFIG_H_CVSID OS_SOLARIS_H_CVSID SCSICMDS_H_CVSID UTILITY_H_CVSID;
-
-// The printwarning() function warns about unimplemented functions
-int printedout[2];
-char *unimplemented[2]={
-  "ATA command routine ata_command_interface()",
-  "3ware Escalade Controller command routine escalade_command_interface()",
-};
-
-int printwarning(int which){
-  if (!unimplemented[which])
-    return 0;
-
-  if (printedout[which])
-    return 1;
-  
-  printedout[which]=1;
-  
-  pout("\n"
-       "#######################################################################\n"
-       "%s NOT IMPLEMENTED under Solaris.\n"
-       "Please contact " PACKAGE_BUGREPORT " if\n"
-       "you want to help in porting smartmontools to Solaris.\n"
-       "#######################################################################\n"
-       "\n",
-       unimplemented[which]);
-
-  return 1;
-}
+const char * os_solaris_cpp_cvsid = "$Id$";
 
 // print examples for smartctl
 void print_smartctl_examples(){
@@ -247,73 +216,11 @@ int deviceclose(int fd){
     return close(fd);
 }
 
-#if defined(WITH_SOLARIS_SPARC_ATA)
-// swap each 2-byte pairs in a sector
-static void swap_sector(void *p)
+// Interface to ATA devices.
+int ata_command_interface(int, smart_command_set, int, char *)
 {
-    int i;
-    char t, *cp = static_cast<char*>(p);
-    for(i = 0; i < 256; i++) {
-        t = cp[0]; cp[0] = cp[1]; cp[1] = t;
-        cp += 2;
-    }
-}
-#endif
-
-// Interface to ATA devices.  See os_linux.c
-int ata_command_interface(int fd, smart_command_set command, int select, char *data){
-#if defined(WITH_SOLARIS_SPARC_ATA)
-    int err;
- 
-    switch (command){
-    case CHECK_POWER_MODE:
-	/* currently not recognized */
-	return -1;
-    case READ_VALUES:
-	return smart_read_data(fd, data);
-    case READ_THRESHOLDS:
-	return smart_read_thresholds(fd, data);
-    case READ_LOG:
-	return smart_read_log(fd, select, 1, data);
-    case IDENTIFY:
-	err = ata_identify(fd, data);
-	if(err) return err;
-	swap_sector(static_cast<void*>(data));
-	return 0;
-    case PIDENTIFY:
-	err = ata_pidentify(fd, data);
-	if(err) return err;
-	swap_sector(static_cast<void*>(data));
-	return 0;
-    case ENABLE:
-	return smart_enable(fd);
-    case DISABLE:
-	return smart_disable(fd);
-    case STATUS:
-	return smart_status(fd);
-    case AUTO_OFFLINE:
-	return smart_auto_offline(fd, select);
-    case AUTOSAVE:
-	return smart_auto_save(fd, select);
-    case IMMEDIATE_OFFLINE:
-	return smart_immediate_offline(fd, select);
-    case STATUS_CHECK:
-	return smart_status_check(fd);
-    default:
-	pout("Unrecognized command %d in ata_command_interface() of os_solaris.c\n", command);
-        errno = EINVAL;
-        return -1;
-    }
-#else /* WITH_SOLARIS_SPARC_ATA */
-    ARGUSED(fd); ARGUSED(command); ARGUSED(select); ARGUSED(data);
-
-    /* Above smart_* routines uses undocumented ioctls of "dada"
-     * driver, which is specific to SPARC Solaris.  See
-     * os_solaris_ata.s for further details. x86 Solaris seems not to
-     * provide similar or alternative interface... */
-    if (printwarning(0))
-	return -1;
-#endif
+    pout("Device type 'ata' not implemented, try '-d sat' or '-d sat,12' instead.\n");
+    errno = ENOSYS;
     return -1;
 }
 
@@ -323,7 +230,7 @@ int ata_command_interface(int fd, smart_command_set command, int select, char *d
 #include <sys/scsi/impl/types.h>
 #include <sys/scsi/impl/uscsi.h>
 
-// Interface to SCSI devices.  See os_linux.c
+// Interface to SCSI devices.
 int do_scsi_cmnd_io(int fd, struct scsi_cmnd_io * iop, int report)
 {
   struct uscsi_cmd uscsi;
@@ -333,7 +240,7 @@ int do_scsi_cmnd_io(int fd, struct scsi_cmnd_io * iop, int report)
     const unsigned char * ucp = iop->cmnd;
     const char * np;
 
-    np = scsi_get_opcode_name(ucp[0]);
+    np = scsi_get_opcode_name(ucp);
     pout(" [%s: ", np ? np : "<unknown opcode>");
     for (k = 0; k < (int)iop->cmnd_len; ++k)
       pout("%02x ", ucp[k]);
