@@ -4,13 +4,13 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch:
 
 jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Install MSYS2
       uses: msys2/setup-msys2@v2
       with:
@@ -37,7 +37,7 @@ jobs:
         strip smartctl.exe
         mv smartctl.exe smartctl-x32.exe
     - name: Upload Artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: windows-binaries
         path: |
@@ -47,7 +47,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Install Dependencies
       run: |
         sudo apt-get update
@@ -61,7 +61,7 @@ jobs:
         make
         strip smartctl
     - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: linux-binary
         path: smartmontools/smartctl
@@ -71,9 +71,9 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Download Artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         path: artifacts
     - name: Create Zip
