@@ -12,7 +12,8 @@ jobs:
     - name: Install MSYS2
       uses: msys2/setup-msys2@v2
       with:
-        msystem: MINGW64
+        msystem: MINGW64 
+   
         update: true
         install: git mingw-w64-x86_64-gcc mingw-w64-x86_64-make mingw-w64-x86_64-autotools
     - name: Configure and Get Version
@@ -24,7 +25,7 @@ jobs:
         autoupdate
         ./configure --host=x86_64-w64-mingw32 CFLAGS="-O2 -static" CXXFLAGS="-O2 -static" LDFLAGS="-s"
         grep 'PACKAGE_VERSION' config.h | cut -d'"' -f2 > version.txt
-        if grep -q '^smartmontools_release_date=' configure.ac; then
+        if grep -q '^smartmontools_release_date=[[:space:]]*[^#]' configure.ac; then
           echo "version=$(cat version.txt)q" >> $GITHUB_OUTPUT
         else
           echo "version=pre-$(cat version.txt)q" >> $GITHUB_OUTPUT
@@ -59,7 +60,6 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
-    # No 'needs' to keep concurrent with build-windows
     steps:
     - uses: actions/checkout@v4
     - name: Install Dependencies
@@ -106,7 +106,8 @@ jobs:
         zip -r smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win32.zip smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win32
         cd ..
         # Linux
-        cp -r artifacts/linux-binary/bin/ release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-linux-x64
+        mkdir -p release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-linux-x64/bin
+        cp artifacts/linux-binary/* release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-linux-x64/bin/
         cd release
         zip -r smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-linux-x64.zip smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-linux-x64
         cd ..
