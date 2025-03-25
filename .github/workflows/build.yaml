@@ -71,7 +71,7 @@ jobs:
 
   create-release:
     needs: [build-windows, build-linux]
-    runs-on: ubuntu-latest
+    runs-on: windows-latest  # Switch to Windows to run smartctl.exe
     steps:
     - uses: actions/checkout@v4
     - name: Download Artifacts
@@ -80,35 +80,37 @@ jobs:
         path: artifacts
     - name: Get Version
       id: get_version
+      shell: cmd  # Use CMD for Windows compatibility
       run: |
-        chmod +x artifacts/windows-binaries/bin/smartctl.exe
-        VERSION=$(artifacts/windows-binaries/bin/smartctl.exe --version | grep "smartctl pre-" | awk '{print $2}')
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
+        artifacts\windows-binaries\bin\smartctl.exe --version > version.txt
+        for /f "tokens=2" %%i in ('findstr "smartctl pre-" version.txt') do set "VERSION=%%i"
+        echo VERSION=%VERSION% >> %GITHUB_ENV%
     - name: Create Zips
+      shell: cmd  # Use CMD for Windows zip command
       run: |
         mkdir release
-        # Win64
-        cp -r artifacts/windows-binaries/bin release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64
+        :: Win64
+        xcopy artifacts\windows-binaries\bin release\smartmontoolsQNAP-%VERSION%-qnaptr-win64\bin\ /E /I /Y
         cd release
-        zip -r smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64.zip smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64
+        powershell -Command "Compress-Archive -Path smartmontoolsQNAP-%VERSION%-qnaptr-win64 -DestinationPath smartmontoolsQNAP-%VERSION%-qnaptr-win64.zip"
         cd ..
-        # Win32
-        cp -r artifacts/windows-binaries/bin32 release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32
+        :: Win32
+        xcopy artifacts\windows-binaries\bin32 release\smartmontoolsQNAP-%VERSION%-qnaptr-win32\bin32\ /E /I /Y
         cd release
-        zip -r smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32.zip smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32
+        powershell -Command "Compress-Archive -Path smartmontoolsQNAP-%VERSION%-qnaptr-win32 -DestinationPath smartmontoolsQNAP-%VERSION%-qnaptr-win32.zip"
         cd ..
-        # Linux
-        cp -r artifacts/linux-binary/bin release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64
+        :: Linux
+        xcopy artifacts\linux-binary\bin release\smartmontoolsQNAP-%VERSION%-qnaptr-linux-x64\bin\ /E /I /Y
         cd release
-        zip -r smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64.zip smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64
+        powershell -Command "Compress-Archive -Path smartmontoolsQNAP-%VERSION%-qnaptr-linux-x64 -DestinationPath smartmontoolsQNAP-%VERSION%-qnaptr-linux-x64.zip"
         cd ..
-        # Windows Combined
-        mkdir -p release/smartmontoolsQNAP-${{ env.VERSION }}-Windows/bin
-        mkdir -p release/smartmontoolsQNAP-${{ env.VERSION }}-Windows/bin32
-        cp -r artifacts/windows-binaries/bin/* release/smartmontoolsQNAP-${{ env.VERSION }}-Windows/bin/
-        cp -r artifacts/windows-binaries/bin32/* release/smartmontoolsQNAP-${{ env.VERSION }}-Windows/bin32/
+        :: Windows Combined
+        mkdir release\smartmontoolsQNAP-%VERSION%-Windows\bin
+        mkdir release\smartmontoolsQNAP-%VERSION%-Windows\bin32
+        xcopy artifacts\windows-binaries\bin release\smartmontoolsQNAP-%VERSION%-Windows\bin\ /E /I /Y
+        xcopy artifacts\windows-binaries\bin32 release\smartmontoolsQNAP-%VERSION%-Windows\bin32\ /E /I /Y
         cd release
-        zip -r smartmontoolsQNAP-${{ env.VERSION }}-Windows.zip smartmontoolsQNAP-${{ env.VERSION }}-Windows
+        powershell -Command "Compress-Archive -Path smartmontoolsQNAP-%VERSION%-Windows -DestinationPath smartmontoolsQNAP-%VERSION%-Windows.zip"
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
