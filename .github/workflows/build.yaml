@@ -22,8 +22,9 @@ jobs:
         ./configure --host=x86_64-w64-mingw32 CFLAGS="-O2 -static" CXXFLAGS="-O2 -static" LDFLAGS="-s"
         make
         strip smartctl.exe smartd.exe
-        mv smartctl.exe smartctl-x64.exe
-        mv smartd.exe smartd-x64.exe
+        mkdir -p bin
+        mv smartctl.exe bin/smartctl.exe
+        mv smartd.exe bin/smartd.exe
     - name: Build 32-bit
       shell: msys2 {0}
       run: |
@@ -32,17 +33,16 @@ jobs:
         ./configure --host=i686-w64-mingw32 CFLAGS="-O2 -static" CXXFLAGS="-O2 -static" LDFLAGS="-s"
         make
         strip smartctl.exe smartd.exe
-        mv smartctl.exe smartctl-x32.exe
-        mv smartd.exe smartd-x32.exe
+        mkdir -p bin32
+        mv smartctl.exe bin32/smartctl.exe
+        mv smartd.exe bin32/smartd.exe
     - name: Upload Artifacts
       uses: actions/upload-artifact@v4
       with:
         name: windows-binaries
         path: |
-          smartmontools/smartctl-x64.exe
-          smartmontools/smartd-x64.exe
-          smartmontools/smartctl-x32.exe
-          smartmontools/smartd-x32.exe
+          smartmontools/bin/
+          smartmontools/bin32/
 
   build-linux:
     runs-on: ubuntu-latest
@@ -60,15 +60,14 @@ jobs:
         ./configure CFLAGS="-O2 -static" CXXFLAGS="-O2 -static" LDFLAGS="-s"
         make
         strip smartctl smartd
-        mv smartctl smartctl-linux-x64
-        mv smartd smartd-linux-x64
+        mkdir -p bin
+        mv smartctl bin/smartctl
+        mv smartd bin/smartd
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: linux-binary
-        path: |
-          smartmontools/smartctl-linux-x64
-          smartmontools/smartd-linux-x64
+        path: smartmontools/bin/
 
   create-release:
     needs: [build-windows, build-linux]
@@ -82,41 +81,34 @@ jobs:
     - name: Get Version
       id: get_version
       run: |
-        chmod +x artifacts/windows-binaries/smartctl-x64.exe
-        VERSION=$(artifacts/windows-binaries/smartctl-x64.exe --version | grep "smartctl pre-" | awk '{print $2}')
+        chmod +x artifacts/windows-binaries/bin/smartctl.exe
+        VERSION=$(artifacts/windows-binaries/bin/smartctl.exe --version | grep "smartctl pre-" | awk '{print $2}')
         echo "VERSION=$VERSION" >> $GITHUB_ENV
     - name: Create Zips
       run: |
         mkdir release
         # Win64
-        mkdir release/win64
-        cp artifacts/windows-binaries/smartctl-x64.exe release/win64/smartctl.exe
-        cp artifacts/windows-binaries/smartd-x64.exe release/win64/smartd.exe
-        cd release/win64
-        zip -r ../smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64.zip .
-        cd ../..
+        cp -r artifacts/windows-binaries/bin release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64
+        cd release
+        zip -r smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64.zip smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64
+        cd ..
         # Win32
-        mkdir release/win32
-        cp artifacts/windows-binaries/smartctl-x32.exe release/win32/smartctl.exe
-        cp artifacts/windows-binaries/smartd-x32.exe release/win32/smartd.exe
-        cd release/win32
-        zip -r ../smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32.zip .
-        cd ../..
+        cp -r artifacts/windows-binaries/bin32 release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32
+        cd release
+        zip -r smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32.zip smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32
+        cd ..
         # Linux
-        mkdir release/linux
-        cp artifacts/linux-binary/smartctl-linux-x64 release/linux/smartctl.exe
-        cp artifacts/linux-binary/smartd-linux-x64 release/linux/smartd.exe
-        cd release/linux
-        zip -r ../smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64.zip .
-        cd ../..
+        cp -r artifacts/linux-binary/bin release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64
+        cd release
+        zip -r smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64.zip smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64
+        cd ..
         # Windows Combined
-        mkdir release/windows
-        cp artifacts/windows-binaries/smartctl-x64.exe release/windows/smartctl.exe
-        cp artifacts/windows-binaries/smartctl-x32.exe release/windows/smartctl32.exe
-        cp artifacts/windows-binaries/smartd-x64.exe release/windows/smartd.exe
-        cp artifacts/windows-binaries/smartd-x32.exe release/windows/smartd32.exe
-        cd release/windows
-        zip -r ../smartmontoolsQNAP-${{ env.VERSION }}-Windows.zip .
+        mkdir -p release/smartmontoolsQNAP-${{ env.VERSION }}-Windows/bin
+        mkdir -p release/smartmontoolsQNAP-${{ env.VERSION }}-Windows/bin32
+        cp -r artifacts/windows-binaries/bin/* release/smartmontoolsQNAP-${{ env.VERSION }}-Windows/bin/
+        cp -r artifacts/windows-binaries/bin32/* release/smartmontoolsQNAP-${{ env.VERSION }}-Windows/bin32/
+        cd release
+        zip -r smartmontoolsQNAP-${{ env.VERSION }}-Windows.zip smartmontoolsQNAP-${{ env.VERSION }}-Windows
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
@@ -124,10 +116,10 @@ jobs:
         name: smartmontools ${{ env.VERSION }} with QNAP TR-004 Support
         body: |
           Binaries for smartmontools ${{ env.VERSION }} with QNAP TR-004 (`qnaptr`) support.
-          - Windows 64-bit: `smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64.zip` (smartctl.exe, smartd.exe)
-          - Windows 32-bit: `smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32.zip` (smartctl.exe, smartd.exe)
-          - Linux 64-bit: `smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64.zip` (smartctl.exe, smartd.exe)
-          - Windows Combined: `smartmontoolsQNAP-${{ env.VERSION }}-Windows.zip` (smartctl.exe, smartctl32.exe, smartd.exe, smartd32.exe)
+          - Windows 64-bit: `smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64.zip` (bin/smartctl.exe, bin/smartd.exe)
+          - Windows 32-bit: `smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32.zip` (bin32/smartctl.exe, bin32/smartd.exe)
+          - Linux 64-bit: `smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64.zip` (bin/smartctl, bin/smartd)
+          - Windows Combined: `smartmontoolsQNAP-${{ env.VERSION }}-Windows.zip` (bin/smartctl.exe, bin32/smartctl.exe, etc.)
         files: |
           release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64.zip
           release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32.zip
