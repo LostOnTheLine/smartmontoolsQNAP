@@ -5,6 +5,8 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
     steps:
     - uses: actions/checkout@v4
     - name: Install MSYS2
@@ -13,13 +15,20 @@ jobs:
         msystem: MINGW64
         update: true
         install: git mingw-w64-x86_64-gcc mingw-w64-x86_64-make mingw-w64-x86_64-autotools
-    - name: Build 64-bit
+    - name: Configure and Get Version
       shell: msys2 {0}
+      id: get_version
       run: |
         cd smartmontools
         ./autogen.sh
         autoupdate
         ./configure --host=x86_64-w64-mingw32 CFLAGS="-O2 -static" CXXFLAGS="-O2 -static" LDFLAGS="-s"
+        grep 'PACKAGE_VERSION' config.h | cut -d'"' -f2 > version.txt
+        echo "version=$(cat version.txt)" >> $GITHUB_OUTPUT
+    - name: Build 64-bit
+      shell: msys2 {0}
+      run: |
+        cd smartmontools
         make
         strip smartctl.exe smartd.exe
         mkdir -p bin
@@ -46,6 +55,7 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-latest
+    needs: build-windows  # To ensure version is available
     steps:
     - uses: actions/checkout@v4
     - name: Install Dependencies
@@ -71,61 +81,54 @@ jobs:
 
   create-release:
     needs: [build-windows, build-linux]
-    runs-on: windows-latest  # Switch to Windows to run smartctl.exe
+    runs-on: ubuntu-latest  # Back to Ubuntu since no exe needed
     steps:
     - uses: actions/checkout@v4
     - name: Download Artifacts
       uses: actions/download-artifact@v4
       with:
         path: artifacts
-    - name: Get Version
-      id: get_version
-      shell: cmd  # Use CMD for Windows compatibility
-      run: |
-        artifacts\windows-binaries\bin\smartctl.exe --version > version.txt
-        for /f "tokens=2" %%i in ('findstr "smartctl pre-" version.txt') do set "VERSION=%%i"
-        echo VERSION=%VERSION% >> %GITHUB_ENV%
     - name: Create Zips
-      shell: cmd  # Use CMD for Windows zip command
       run: |
         mkdir release
-        :: Win64
-        xcopy artifacts\windows-binaries\bin release\smartmontoolsQNAP-%VERSION%-qnaptr-win64\bin\ /E /I /Y
+        # Win64
+        cp -r artifacts/windows-binaries/bin release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win64
         cd release
-        powershell -Command "Compress-Archive -Path smartmontoolsQNAP-%VERSION%-qnaptr-win64 -DestinationPath smartmontoolsQNAP-%VERSION%-qnaptr-win64.zip"
+        zip -r smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win64.zip smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win64
         cd ..
-        :: Win32
-        xcopy artifacts\windows-binaries\bin32 release\smartmontoolsQNAP-%VERSION%-qnaptr-win32\bin32\ /E /I /Y
+        # Win32
+        cp -r artifacts/windows-binaries/bin32 release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win32
         cd release
-        powershell -Command "Compress-Archive -Path smartmontoolsQNAP-%VERSION%-qnaptr-win32 -DestinationPath smartmontoolsQNAP-%VERSION%-qnaptr-win32.zip"
+        zip -r smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win32.zip smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win32
         cd ..
-        :: Linux
-        xcopy artifacts\linux-binary\bin release\smartmontoolsQNAP-%VERSION%-qnaptr-linux-x64\bin\ /E /I /Y
+        # Linux
+        cp -r artifacts/linux-binary/bin release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-linux-x64
         cd release
-        powershell -Command "Compress-Archive -Path smartmontoolsQNAP-%VERSION%-qnaptr-linux-x64 -DestinationPath smartmontoolsQNAP-%VERSION%-qnaptr-linux-x64.zip"
+        zip -r smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-linux-x64.zip smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-linux-x64
         cd ..
-        :: Windows Combined
-        mkdir release\smartmontoolsQNAP-%VERSION%-Windows\bin
-        mkdir release\smartmontoolsQNAP-%VERSION%-Windows\bin32
-        xcopy artifacts\windows-binaries\bin release\smartmontoolsQNAP-%VERSION%-Windows\bin\ /E /I /Y
-        xcopy artifacts\windows-binaries\bin32 release\smartmontoolsQNAP-%VERSION%-Windows\bin32\ /E /I /Y
+        # Windows Combined
+        mkdir -p release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-Windows/bin
+        mkdir -p release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-Windows/bin32
+        cp -r artifacts/windows-binaries/bin/* release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-Windows/bin/
+        cp -r artifacts/windows-binaries/bin32/* release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-Windows/bin32/
         cd release
-        powershell -Command "Compress-Archive -Path smartmontoolsQNAP-%VERSION%-Windows -DestinationPath smartmontoolsQNAP-%VERSION%-Windows.zip"
+        zip -r smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-Windows.zip smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-Windows
+        cd ..
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: v${{ env.VERSION }}-qnaptr-${{ github.sha }}
-        name: smartmontools ${{ env.VERSION }} with QNAP TR-004 Support
+        tag_name: v${{ needs.build-windows.outputs.version }}-qnaptr-${{ github.sha }}
+        name: smartmontools ${{ needs.build-windows.outputs.version }} with QNAP TR-004 Support
         body: |
-          Binaries for smartmontools ${{ env.VERSION }} with QNAP TR-004 (`qnaptr`) support.
-          - Windows 64-bit: `smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64.zip` (bin/smartctl.exe, bin/smartd.exe)
-          - Windows 32-bit: `smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32.zip` (bin32/smartctl.exe, bin32/smartd.exe)
-          - Linux 64-bit: `smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64.zip` (bin/smartctl, bin/smartd)
-          - Windows Combined: `smartmontoolsQNAP-${{ env.VERSION }}-Windows.zip` (bin/smartctl.exe, bin32/smartctl.exe, etc.)
+          Binaries for smartmontools ${{ needs.build-windows.outputs.version }} with QNAP TR-004 (`qnaptr`) support.
+          - Windows 64-bit: `smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win64.zip` (bin/smartctl.exe, bin/smartd.exe)
+          - Windows 32-bit: `smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win32.zip` (bin32/smartctl.exe, bin32/smartd.exe)
+          - Linux 64-bit: `smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-linux-x64.zip` (bin/smartctl, bin/smartd)
+          - Windows Combined: `smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-Windows.zip` (bin/smartctl.exe, bin32/smartctl.exe, etc.)
         files: |
-          release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win64.zip
-          release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-win32.zip
-          release/smartmontoolsQNAP-${{ env.VERSION }}-qnaptr-linux-x64.zip
-          release/smartmontoolsQNAP-${{ env.VERSION }}-Windows.zip
+          release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win64.zip
+          release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-win32.zip
+          release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-qnaptr-linux-x64.zip
+          release/smartmontoolsQNAP-${{ needs.build-windows.outputs.version }}-Windows.zip
       env:
         GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
